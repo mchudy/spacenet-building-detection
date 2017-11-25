@@ -1,0 +1,6 @@
+[submodule "utilities"]
+	path = utilities
+	url = https://github.com/SpaceNetChallenge/utilities
+[submodule "visualizer"]
+	path = visualizer
+	url = https://github.com/SpaceNetChallenge/BuildingDetectorVisualizer
