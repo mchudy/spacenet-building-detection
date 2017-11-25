@@ -102,4 +102,5 @@ ENV/
 
 # Raw data
 data/*
+results/*
 !**/.gitkeep
