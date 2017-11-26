@@ -203,11 +203,11 @@ def generate_masks():
 def convert_geotiff_to_array(path):
     mul_ds = gdal.Open(path)
     channels = mul_ds.RasterCount
-    mul_img = np.zeros((mul_ds.RasterXSize, mul_ds.RasterYSize, channels), dtype='uint16')
+    mul_img = np.zeros((mul_ds.RasterXSize, mul_ds.RasterYSize, channels), dtype='float')
     #geoTf   = np.asarray(mul_ds.GetGeoTransform())
 
     for band in range(0, channels):
-        mul_img[:,:,band] = mul_ds.GetRasterBand(band+1).ReadAsArray().transpose()
+        mul_img[:,:,band] = mul_ds.GetRasterBand(band+1).ReadAsArray().transpose().astype(float) / 255.0
 
     return mul_img
 
