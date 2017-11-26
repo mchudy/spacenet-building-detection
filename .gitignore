@@ -104,3 +104,4 @@ ENV/
 data/*
 results/*
 !**/.gitkeep
+logs/
