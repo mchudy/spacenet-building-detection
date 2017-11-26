@@ -179,11 +179,19 @@ def plot_truth_coords(input_image, mask_image, pixel_coords,
     return patches, patches_nofill
 
 
+def get_3band_image_path(img_number):
+    return rel_path(f'../data/rio/3band/3band_AOI_1_RIO_img{img_number}.tif')
+
+
+def get_8band_image_path(img_number):
+    return rel_path(f'../data/rio/8band/8band_AOI_1_RIO_img{img_number}.tif')
+
+
 def generate_masks():
     os.makedirs(rel_path('../data/rio/masks'), exist_ok=True)
 
     for i in trange(1, number_of_images + 1):
-        img_file = rel_path(f'../data/rio/3band/3band_AOI_1_RIO_img{i}.tif')
+        img_file = get_3band_image_path(i)
         geojson_file = rel_path(f'../data/rio/vectordata/geojson/Geo_AOI_1_RIO_img{i}.geojson')
         mask_file = rel_path(f'../data/rio/masks/AOI_1_RIO_img{i}_mask.tif')
         visible_mask_file = rel_path(f'../data/rio/masks/AOI_1_RIO_img{i}_mask_visible.tif')
@@ -192,12 +200,26 @@ def generate_masks():
         create_building_mask(img_file, geojson_file, npDistFileName=visible_mask_file, burn_values=255)
 
 
+def convert_geotiff_to_array(path):
+    mul_ds = gdal.Open(path)
+    channels = mul_ds.RasterCount
+    mul_img = np.zeros((mul_ds.RasterXSize, mul_ds.RasterYSize, channels), dtype='uint16')
+    #geoTf   = np.asarray(mul_ds.GetGeoTransform())
+
+    for band in range(0, channels):
+        mul_img[:,:,band] = mul_ds.GetRasterBand(band+1).ReadAsArray().transpose()
+
+    return mul_img
+
+
 if __name__ == '__main__':
 
     band3_images_path = rel_path('../data/rio/3band')
     band8_images_path = rel_path('../data/rio/8band')
 
-    generate_masks()
+    #generate_masks()
+    image_array = convert_geotiff_to_array(get_3band_image_path(30))
+    print(image_array)
     #patches, patches_no_fill = geojson_to_pixel_arr(img_file, geojson_file)
     #plot_truth_coords(plt.imread(img_file), plt.imread(mask_file), patches)
 
