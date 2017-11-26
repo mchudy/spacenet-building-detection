@@ -200,14 +200,15 @@ def generate_masks():
         create_building_mask(img_file, geojson_file, npDistFileName=visible_mask_file, burn_values=255)
 
 
-def convert_geotiff_to_array(path):
-    mul_ds = gdal.Open(path)
-    channels = mul_ds.RasterCount
-    mul_img = np.zeros((mul_ds.RasterXSize, mul_ds.RasterYSize, channels), dtype='float')
-    #geoTf   = np.asarray(mul_ds.GetGeoTransform())
+def convert_geotiff_to_array(image_number):
+    image_3band = gdal.Open(get_3band_image_path(image_number))
+    #image_8band = gdal.Open(get_8band_image_path(image_number))
+    #gdal.Warp('rescaled.tif', image_3band, width=1000, height=1000)
+    channels = image_3band.RasterCount
+    mul_img = np.zeros((image_3band.RasterXSize, image_3band.RasterYSize, channels), dtype='float')
 
     for band in range(0, channels):
-        mul_img[:,:,band] = mul_ds.GetRasterBand(band+1).ReadAsArray().transpose().astype(float) / 255.0
+        mul_img[:,:,band] = image_3band.GetRasterBand(band+1).ReadAsArray().transpose().astype(float) / 255.0
 
     return mul_img
 
@@ -218,7 +219,7 @@ if __name__ == '__main__':
     band8_images_path = rel_path('../data/rio/8band')
 
     #generate_masks()
-    image_array = convert_geotiff_to_array(get_3band_image_path(30))
+    image_array = convert_geotiff_to_array(30)
     print(image_array)
     #patches, patches_no_fill = geojson_to_pixel_arr(img_file, geojson_file)
     #plot_truth_coords(plt.imread(img_file), plt.imread(mask_file), patches)
