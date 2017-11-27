@@ -15,6 +15,7 @@ from max_pool_2d import MaxPool2d
 import datetime
 import time
 import math
+import io
 
 
 dataset = 'AOI_1_RIO'
@@ -195,7 +196,9 @@ def get_3band_image_path(img_number, scaled=False):
     return rel_path(f'../data/rio/3band/3band_AOI_1_RIO_img{img_number}.tif')
 
 
-def get_8band_image_path(img_number):
+def get_8band_image_path(img_number, scaled=False):
+    if scaled:
+        return rel_path(f'../data/rio/scaled/8band_AOI_1_RIO_img{img_number}.tif')
     return rel_path(f'../data/rio/8band/8band_AOI_1_RIO_img{img_number}.tif')
 
 
@@ -209,13 +212,18 @@ def generate_masks():
         create_building_mask(img_file, geojson_file, npDistFileName=visible_mask_file, burn_values=255)
 
 
-def convert_geotiff_to_array(image_number, scaled=False):
+def convert_geotiff_to_array(image_number, scaled=False, only_rgb=False):
     image_3band = gdal.Open(get_3band_image_path(image_number, scaled))
-    channels = image_3band.RasterCount
+    image_8band = gdal.Open(get_8band_image_path(image_number, scaled))
+    channels = image_3band.RasterCount + image_8band.RasterCount
     mul_img = np.zeros((image_3band.RasterXSize, image_3band.RasterYSize, channels), dtype='float')
 
-    for band in range(0, channels):
+    for band in range(0, image_3band.RasterCount):
         mul_img[:,:,band] = image_3band.GetRasterBand(band+1).ReadAsArray().transpose().astype(float) / 255.0
+
+    for band in range(0, image_8band.RasterCount):
+        output_band = image_3band.RasterCount + band
+        mul_img[:,:,output_band] = image_8band.GetRasterBand(band+1).ReadAsArray().transpose().astype(float) / 255.0
 
     return mul_img
 
@@ -237,11 +245,15 @@ def rescale_images():
         image_3band = gdal.Open(img_file)
         gdal.Warp(rel_path(f'../data/rio/scaled/3band_AOI_1_RIO_img{i}.tif'), image_3band, width=128, height=128)
 
+        img_file = get_8band_image_path(i)
+        image_8band = gdal.Open(img_file)
+        gdal.Warp(rel_path(f'../data/rio/scaled/8band_AOI_1_RIO_img{i}.tif'), image_8band, width=128, height=128)
+
 
 class Network:
     IMAGE_HEIGHT = 128
     IMAGE_WIDTH = 128
-    IMAGE_CHANNELS = 3
+    IMAGE_CHANNELS = 11
 
     def __init__(self, layers=None, per_image_standardization=True, batch_norm=True, skip_connections=True):
         if layers == None:
@@ -277,8 +289,6 @@ class Network:
             self.layers[layer.name] = net = layer.create_layer(net)
             self.description += "{}".format(layer.get_description())
 
-        print("Current input shape: ", net.get_shape())
-
         layers.reverse()
         Conv2d.reverse_global_variables()
 
@@ -286,15 +296,12 @@ class Network:
         for layer in layers:
             net = layer.create_layer_reversed(net, prev_layer=self.layers[layer.name])
 
-        self.segmentation_result = tf.sigmoid(net)
-
-        print('segmentation_result.shape: {}, targets.shape: {}'.format(self.segmentation_result.get_shape(),
-                                                                        self.targets.get_shape()))
+        self.segmentation_result = tf.layers.dense(inputs=tf.sigmoid(net), units=1)
 
         self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
         self.train_op = tf.train.AdamOptimizer().minimize(self.cost)
         with tf.name_scope('accuracy'):
-            argmax_probs = tf.round(self.segmentation_result)  # 0x1
+            argmax_probs = tf.round(self.segmentation_result)
             correct_pred = tf.cast(tf.equal(argmax_probs, self.targets), tf.float32)
             self.accuracy = tf.reduce_mean(correct_pred)
 
@@ -303,25 +310,58 @@ class Network:
         self.summaries = tf.summary.merge_all()
 
 
+def draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, network, batch_num):
+    n_examples_to_plot = 12
+    fig, axs = plt.subplots(4, n_examples_to_plot, figsize=(n_examples_to_plot * 3, 10))
+    for example_i in range(n_examples_to_plot):
+        axs[0][example_i].imshow(test_inputs[example_i][:,:,:3])
+        axs[1][example_i].imshow(test_targets[example_i][:,:,0], cmap='gray')
+        axs[2][example_i].imshow(
+            np.reshape(test_segmentation[example_i][:,:,0], [network.IMAGE_HEIGHT, network.IMAGE_WIDTH]), cmap='gray')
+
+        test_image_thresholded = np.array(
+            [0 if x < 0.5 else 255 for x in test_segmentation[example_i].flatten()])
+        axs[3][example_i].imshow(
+            np.reshape(test_image_thresholded, [network.IMAGE_HEIGHT, network.IMAGE_WIDTH]),
+            cmap='gray')
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+
+    IMAGE_PLOT_DIR = 'image_plots/'
+    if not os.path.exists(IMAGE_PLOT_DIR):
+        os.makedirs(IMAGE_PLOT_DIR)
+
+    plt.savefig('{}/figure{}.jpg'.format(IMAGE_PLOT_DIR, batch_num))
+    return buf
+
+
 def train():
-    BATCH_SIZE = 50
-    IMAGES_COUNT = 200
-    EPOCHS = 100
+    BATCH_SIZE = 100
+    IMAGES_COUNT = 800
+    TRAIN_IMAGES_COUNT = 200
+    EPOCHS = 50
     BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
 
     network = Network()
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    os.makedirs(os.path.join('save', network.description, timestamp))
+    os.makedirs(os.path.join('models', network.description, timestamp))
 
-    #dataset = Dataset(folder='data{}_{}'.format(network.IMAGE_HEIGHT, network.IMAGE_WIDTH), include_hair=False,
-    #                  batch_size=BATCH_SIZE)
     all_inputs = []
     all_targets = []
     batch_pointer = 0
 
+    test_inputs = []
+    test_targets = []
+
     for i in range(1, IMAGES_COUNT + 1):
         all_inputs.append(convert_geotiff_to_array(i, scaled=True))
         all_targets.append(convert_target_to_array(i))
+
+    for i in range(IMAGES_COUNT + 1, IMAGES_COUNT + 1 + TRAIN_IMAGES_COUNT):
+        test_inputs.append(convert_geotiff_to_array(i, scaled=True))
+        test_targets.append(convert_target_to_array(i))
 
     def next_batch(batch_pointer):
         inputs = []
@@ -334,15 +374,10 @@ def train():
         batch_pointer += BATCH_SIZE
         return np.array(inputs), np.array(targets)
 
-    inputs, targets = next_batch(batch_pointer)
-    print(inputs.shape, targets.shape)
-
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
 
-        summary_writer = tf.summary.FileWriter('{}/{}-{}'.format('logs', network.description, timestamp),
-                                               graph=tf.get_default_graph())
-        saver = tf.train.Saver(tf.all_variables(), max_to_keep=None)
+        # saver = tf.train.Saver(tf.global_variables(), max_to_keep=None)
 
         test_accuracies = []
         global_start = time.time()
@@ -370,79 +405,53 @@ def train():
                                                                           EPOCHS * BATCHES_IN_EPOCH,
                                                                           epoch_i, cost, end - start))
 
-                # if batch_num % 100 == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
-                #     test_inputs, test_targets = dataset.test_set
-                #     # test_inputs, test_targets = test_inputs[:100], test_targets[:100]
+                if batch_num % 20 == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
 
-                #     test_inputs = np.reshape(test_inputs, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
-                #     test_targets = np.reshape(test_targets, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
-                #     test_inputs = np.multiply(test_inputs, 1.0 / 255)
+                    test_inputs = np.reshape(test_inputs, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, network.IMAGE_CHANNELS))
+                    test_targets = np.reshape(test_targets, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
 
-                #     print(test_inputs.shape)
-                #     summary, test_accuracy = sess.run([network.summaries, network.accuracy],
-                #                                       feed_dict={network.inputs: test_inputs,
-                #                                                  network.targets: test_targets,
-                #                                                  network.is_training: False})
+                    summary, test_accuracy = sess.run([network.summaries, network.accuracy],
+                                                    feed_dict={network.inputs: test_inputs,
+                                                                network.targets: test_targets,
+                                                                network.is_training: False})
 
-                #     summary_writer.add_summary(summary, batch_num)
+                    print('Step {}, test accuracy: {}'.format(batch_num, test_accuracy))
+                    test_accuracies.append((test_accuracy, batch_num))
+                    print("Accuracies in time: ", [test_accuracies[x][0] for x in range(len(test_accuracies))])
+                    max_acc = max(test_accuracies)
+                    print("Best accuracy: {} in batch {}".format(max_acc[0], max_acc[1]))
+                    print("Total time: {}".format(time.time() - global_start))
 
-                #     print('Step {}, test accuracy: {}'.format(batch_num, test_accuracy))
-                #     test_accuracies.append((test_accuracy, batch_num))
-                #     print("Accuracies in time: ", [test_accuracies[x][0] for x in range(len(test_accuracies))])
-                #     max_acc = max(test_accuracies)
-                #     print("Best accuracy: {} in batch {}".format(max_acc[0], max_acc[1]))
-                #     print("Total time: {}".format(time.time() - global_start))
+                    n_examples = 12
+                    test_inputs, test_targets = test_inputs[:n_examples], test_targets[:n_examples]
 
-                #     # Plot example reconstructions
-                #     n_examples = 12
-                #     test_inputs, test_targets = dataset.test_inputs[:n_examples], dataset.test_targets[:n_examples]
-                #     test_inputs = np.multiply(test_inputs, 1.0 / 255)
+                    test_segmentation = sess.run(network.segmentation_result, feed_dict={
+                        network.inputs: np.reshape(test_inputs, [n_examples, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 11])})
 
-                #     test_segmentation = sess.run(network.segmentation_result, feed_dict={
-                #         network.inputs: np.reshape(test_inputs,
-                #                                    [n_examples, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1])})
+                    test_plot_buf = draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, network,
+                                                 batch_num)
+                    #image = tf.image.decode_png(test_plot_buf.getvalue(), channels=4)
+                    #image = tf.expand_dims(image, 0)
 
-                #     # Prepare the plot
-                #     test_plot_buf = draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, network,
-                #                                  batch_num)
+                    #if test_accuracy >= max_acc[0]:
+                    #    checkpoint_path = os.path.join('models', network.description, timestamp, 'model.ckpt')
+                    #    saver.save(sess, checkpoint_path, global_step=batch_num)
 
-                #     # Convert PNG buffer to TF image
-                #     image = tf.image.decode_png(test_plot_buf.getvalue(), channels=4)
 
-                #     # Add the batch dimension
-                #     image = tf.expand_dims(image, 0)
-
-                #     # Add image summary
-                #     image_summary_op = tf.summary.image("plot", image)
-
-                #     image_summary = sess.run(image_summary_op)
-                #     summary_writer.add_summary(image_summary)
-
-                #     if test_accuracy >= max_acc[0]:
-                #         checkpoint_path = os.path.join('save', network.description, timestamp, 'model.ckpt')
-                #         saver.save(sess, checkpoint_path, global_step=batch_num)
-
+def preprocess_data():
+    rescale_images()
+    generate_masks()
 
 
 if __name__ == '__main__':
+    #preprocess_data()
     train()
-    #rescale_images()
-    #generate_masks()
-    #image_array = convert_geotiff_to_array(30)
-    #print(image_array)
-    #patches, patches_no_fill = geojson_to_pixel_arr(img_file, geojson_file)
-    #plot_truth_coords(plt.imread(img_file), plt.imread(mask_file), patches)
 
 
-
+#patches, patches_no_fill = geojson_to_pixel_arr(img_file, geojson_file)
+#plot_truth_coords(plt.imread(img_file), plt.imread(mask_file), patches)
 #band3_solution_path = rel_path('../data/rio/vectordata/summarydata/AOI_1_RIO_polygons_solution_3band.csv')
 #band8_solution_path = rel_path('../data/rio/vectordata/summarydata/AOI_1_RIO_polygons_solution_8band.csv')
 #ImageId,BuildingId,PolygonWKT_Pix,PolygonWKT_Geo
 #band3_solution_df = pd.read_csv(band3_solution_path)
 #band8_solution_df = pd.read_csv(band8_solution_path)
-
-#ds8 = gdal.Open(band8_images_path+ '/8band_' + dataset + '_img' + str(1) + '.tif')
-#print(ds8)
-
-#x8band = tf.placeholder(tf.float32, shape=[None, FLAGS.ws, FLAGS.ws, 8])
-#x3band = tf.placeholder(tf.float32, shape=[None, scale * FLAGS.ws, scale * FLAGS.ws, 3])
