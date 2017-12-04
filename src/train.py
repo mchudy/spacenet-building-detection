@@ -16,6 +16,7 @@ import datetime
 import time
 import math
 import io
+import random
 
 
 dataset = 'AOI_1_RIO'
@@ -243,16 +244,16 @@ def rescale_images():
     for i in trange(1, number_of_images + 1):
         img_file = get_3band_image_path(i)
         image_3band = gdal.Open(img_file)
-        gdal.Warp(rel_path(f'../data/rio/scaled/3band_AOI_1_RIO_img{i}.tif'), image_3band, width=128, height=128)
+        gdal.Warp(rel_path(f'../data/rio/scaled/3band_AOI_1_RIO_img{i}.tif'), image_3band, width=Network.IMAGE_WIDTH, height=Network.IMAGE_HEIGHT)
 
         img_file = get_8band_image_path(i)
         image_8band = gdal.Open(img_file)
-        gdal.Warp(rel_path(f'../data/rio/scaled/8band_AOI_1_RIO_img{i}.tif'), image_8band, width=128, height=128)
+        gdal.Warp(rel_path(f'../data/rio/scaled/8band_AOI_1_RIO_img{i}.tif'), image_8band, width=Network.IMAGE_WIDTH, height=Network.IMAGE_HEIGHT)
 
 
 class Network:
-    IMAGE_HEIGHT = 128
-    IMAGE_WIDTH = 128
+    IMAGE_HEIGHT = 256
+    IMAGE_WIDTH = 256
     IMAGE_CHANNELS = 11
 
     def __init__(self, layers=None, per_image_standardization=True, batch_norm=True, skip_connections=True):
@@ -268,7 +269,11 @@ class Network:
 
             layers.append(Conv2d(kernel_size=7, strides=[1, 2, 2, 1], output_channels=64, name='conv_3_1'))
             layers.append(Conv2d(kernel_size=7, strides=[1, 1, 1, 1], output_channels=64, name='conv_3_2'))
-            layers.append(MaxPool2d(kernel_size=2, name='max_3'))
+            layers.append(MaxPool2d(kernel_size=2, name='max_3', skip_connection=skip_connections))
+
+            layers.append(Conv2d(kernel_size=7, strides=[1, 2, 2, 1], output_channels=64, name='conv_4_1'))
+            layers.append(Conv2d(kernel_size=7, strides=[1, 1, 1, 1], output_channels=64, name='conv_4_2'))
+            layers.append(MaxPool2d(kernel_size=2, name='max_4'))
 
         self.inputs = tf.placeholder(tf.float32, [None, self.IMAGE_HEIGHT, self.IMAGE_WIDTH, self.IMAGE_CHANNELS],
                                      name='inputs')
@@ -313,6 +318,7 @@ class Network:
 def draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, network, batch_num):
     n_examples_to_plot = 12
     fig, axs = plt.subplots(4, n_examples_to_plot, figsize=(n_examples_to_plot * 3, 10))
+
     for example_i in range(n_examples_to_plot):
         axs[0][example_i].imshow(test_inputs[example_i][:,:,:3])
         axs[1][example_i].imshow(test_targets[example_i][:,:,0], cmap='gray')
@@ -337,10 +343,23 @@ def draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, ne
     return buf
 
 
+def jaccard(im1, im2):
+    im1 = np.asarray(im1).astype(np.bool)
+    im2 = np.asarray(im2).astype(np.bool)
+
+    if im1.shape != im2.shape:
+        raise ValueError("Shape mismatch: im1 and im2 must have the same shape.")
+
+    intersection = np.logical_and(im1, im2)
+    union = np.logical_or(im1, im2)
+
+    return intersection.sum() / float(union.sum())
+
+
 def train():
-    BATCH_SIZE = 100
+    BATCH_SIZE = 25
     IMAGES_COUNT = 800
-    TRAIN_IMAGES_COUNT = 200
+    TEST_IMAGES_COUNT = 100
     EPOCHS = 50
     BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
 
@@ -359,7 +378,7 @@ def train():
         all_inputs.append(convert_geotiff_to_array(i, scaled=True))
         all_targets.append(convert_target_to_array(i))
 
-    for i in range(IMAGES_COUNT + 1, IMAGES_COUNT + 1 + TRAIN_IMAGES_COUNT):
+    for i in range(IMAGES_COUNT + 1, IMAGES_COUNT + 1 + TEST_IMAGES_COUNT):
         test_inputs.append(convert_geotiff_to_array(i, scaled=True))
         test_targets.append(convert_target_to_array(i))
 
@@ -376,7 +395,7 @@ def train():
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
-
+        print('Running session...')
         # saver = tf.train.Saver(tf.global_variables(), max_to_keep=None)
 
         test_accuracies = []
@@ -405,15 +424,26 @@ def train():
                                                                           EPOCHS * BATCHES_IN_EPOCH,
                                                                           epoch_i, cost, end - start))
 
-                if batch_num % 20 == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
-
+                if batch_num % 10 == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
+                    print('Testing...')
                     test_inputs = np.reshape(test_inputs, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, network.IMAGE_CHANNELS))
                     test_targets = np.reshape(test_targets, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
-
                     summary, test_accuracy = sess.run([network.summaries, network.accuracy],
                                                     feed_dict={network.inputs: test_inputs,
                                                                 network.targets: test_targets,
                                                                 network.is_training: False})
+
+                    test_segmentation = sess.run(network.segmentation_result, feed_dict={
+                        network.inputs: np.reshape(test_inputs, [TEST_IMAGES_COUNT, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 11])})
+
+                    for i in range(len(test_targets)):
+                        flattened = test_targets[i].flatten()
+                        test_segmentation_binarized = np.array([0 if x < 0.5 else 255 for x in test_segmentation[i].flatten()])
+                        if not any(test_segmentation_binarized) and not any(flattened):
+                            print(f'Test case {i}: empty')
+                        else:
+                            jaccard_index = jaccard(test_targets[i].flatten(), test_segmentation_binarized)
+                            print(f'Test case {i}: {jaccard_index}')
 
                     print('Step {}, test accuracy: {}'.format(batch_num, test_accuracy))
                     test_accuracies.append((test_accuracy, batch_num))
@@ -422,18 +452,15 @@ def train():
                     print("Best accuracy: {} in batch {}".format(max_acc[0], max_acc[1]))
                     print("Total time: {}".format(time.time() - global_start))
 
-                    n_examples = 12
-                    test_inputs, test_targets = test_inputs[:n_examples], test_targets[:n_examples]
-
-                    test_segmentation = sess.run(network.segmentation_result, feed_dict={
-                        network.inputs: np.reshape(test_inputs, [n_examples, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 11])})
-
-                    test_plot_buf = draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, network,
+                    n_examples = 8
+                    sample = random.sample(range(TEST_IMAGES_COUNT), n_examples) + [2,3,4,5]
+                    test_plot_buf = draw_results(test_inputs[sample], test_targets[sample], test_segmentation[sample], test_accuracy, network,
                                                  batch_num)
-                    #image = tf.image.decode_png(test_plot_buf.getvalue(), channels=4)
-                    #image = tf.expand_dims(image, 0)
 
-                    #if test_accuracy >= max_acc[0]:
+                    # image = tf.image.decode_png(test_plot_buf.getvalue(), channels=4)
+                    # image = tf.expand_dims(image, 0)
+
+                    # if test_accuracy >= max_acc[0]:
                     #    checkpoint_path = os.path.join('models', network.description, timestamp, 'model.ckpt')
                     #    saver.save(sess, checkpoint_path, global_step=batch_num)
 
