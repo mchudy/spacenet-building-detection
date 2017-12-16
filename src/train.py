@@ -154,7 +154,20 @@ def create_building_mask(rasterSrc, vectorSrc, npDistFileName='',
     gdal.RasterizeLayer(dst_ds, [1], source_layer, burn_values=[burn_values])
     dst_ds = 0
 
-    return
+
+def image_augmentation(image, mask):
+    # concat_image = tf.concat([image, mask], axis=-1)
+
+    # maybe_flipped = tf.image.random_flip_left_right(concat_image)
+    # maybe_flipped = tf.image.random_flip_up_down(concat_image)
+
+    # image = maybe_flipped[:, :, :-1]
+    # mask = maybe_flipped[:, :, -1:]
+
+    # image = tf.image.random_brightness(image, 0.7)
+    # image = tf.image.random_hue(image, 0.3)
+
+    return image, mask
 
 
 def plot_truth_coords(input_image, mask_image, pixel_coords,
@@ -301,10 +314,11 @@ class Network:
         for layer in layers:
             net = layer.create_layer_reversed(net, prev_layer=self.layers[layer.name])
 
+        # self.segmentation_result = tf.layers.conv2d(conv9, 1, (1, 1), name='final', activation=tf.nn.sigmoid, padding='same')
         self.segmentation_result = tf.layers.dense(inputs=tf.sigmoid(net), units=1)
 
         self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
-        self.train_op = tf.train.AdamOptimizer().minimize(self.cost)
+        self.train_op = tf.train.AdamOptimizer(learning_rate=1e-5).minimize(self.cost)
         with tf.name_scope('accuracy'):
             argmax_probs = tf.round(self.segmentation_result)
             correct_pred = tf.cast(tf.equal(argmax_probs, self.targets), tf.float32)
@@ -357,7 +371,7 @@ def jaccard(im1, im2):
 
 
 def train():
-    BATCH_SIZE = 25
+    BATCH_SIZE = 1
     IMAGES_COUNT = 800
     TEST_IMAGES_COUNT = 100
     EPOCHS = 50
@@ -375,8 +389,11 @@ def train():
     test_targets = []
 
     for i in range(1, IMAGES_COUNT + 1):
-        all_inputs.append(convert_geotiff_to_array(i, scaled=True))
-        all_targets.append(convert_target_to_array(i))
+        input_image_array = convert_geotiff_to_array(i, scaled=True)
+        mask_array = convert_target_to_array(i)
+        input_image, mask = image_augmentation(input_image_array, mask_array)
+        all_inputs.append(input_image)
+        all_targets.append(mask)
 
     for i in range(IMAGES_COUNT + 1, IMAGES_COUNT + 1 + TEST_IMAGES_COUNT):
         test_inputs.append(convert_geotiff_to_array(i, scaled=True))
@@ -396,7 +413,7 @@ def train():
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         print('Running session...')
-        # saver = tf.train.Saver(tf.global_variables(), max_to_keep=None)
+        saver = tf.train.Saver(tf.global_variables(), max_to_keep=None)
 
         test_accuracies = []
         global_start = time.time()
@@ -422,9 +439,9 @@ def train():
                 end = time.time()
                 print('{}/{}, epoch: {}, cost: {}, batch time: {}'.format(batch_num,
                                                                           EPOCHS * BATCHES_IN_EPOCH,
-                                                                          epoch_i, cost, end - start))
+                                                                          epoch_i + 1, cost, end - start))
 
-                if batch_num % 10 == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
+                if batch_num % 50 == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
                     print('Testing...')
                     test_inputs = np.reshape(test_inputs, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, network.IMAGE_CHANNELS))
                     test_targets = np.reshape(test_targets, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
@@ -460,25 +477,15 @@ def train():
                     # image = tf.image.decode_png(test_plot_buf.getvalue(), channels=4)
                     # image = tf.expand_dims(image, 0)
 
-                    # if test_accuracy >= max_acc[0]:
-                    #    checkpoint_path = os.path.join('models', network.description, timestamp, 'model.ckpt')
-                    #    saver.save(sess, checkpoint_path, global_step=batch_num)
+                    if test_accuracy >= max_acc[0]:
+                       checkpoint_path = os.path.join('models', network.description, timestamp, 'model.ckpt')
+                       saver.save(sess, checkpoint_path, global_step=batch_num)
 
 
 def preprocess_data():
     rescale_images()
     generate_masks()
 
-
 if __name__ == '__main__':
     #preprocess_data()
     train()
-
-
-#patches, patches_no_fill = geojson_to_pixel_arr(img_file, geojson_file)
-#plot_truth_coords(plt.imread(img_file), plt.imread(mask_file), patches)
-#band3_solution_path = rel_path('../data/rio/vectordata/summarydata/AOI_1_RIO_polygons_solution_3band.csv')
-#band8_solution_path = rel_path('../data/rio/vectordata/summarydata/AOI_1_RIO_polygons_solution_8band.csv')
-#ImageId,BuildingId,PolygonWKT_Pix,PolygonWKT_Geo
-#band3_solution_df = pd.read_csv(band3_solution_path)
-#band8_solution_df = pd.read_csv(band8_solution_path)

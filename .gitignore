@@ -106,3 +106,4 @@ results/*
 !**/.gitkeep
 logs/
 image_plots/
+models/*

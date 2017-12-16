@@ -11,7 +11,7 @@ download-data: ## Download SpaceNet data
 clean: ## Clean all generated files
 	find . -name "*.pyc" -exec rm {} \;
 
-train:
+train: ## Train the model
 	python3 ./src/train.py
 
 .DEFAULT_GOAL := help
