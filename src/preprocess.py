@@ -7,13 +7,12 @@ import os
 from unet import Network
 
 
-dataset = 'AOI_1_RIO'
-script_path = os.path.dirname(os.path.realpath(__file__))
-number_of_images = 6940
+SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
+IMAGES_COUNT = 6940
 
 
 def rel_path(path):
-    return os.path.join(script_path, path)
+    return os.path.join(SCRIPT_PATH, path)
 
 
 def get_mask_image_path(img_number):
@@ -112,7 +111,7 @@ def generate_masks(perm):
 
 def preprocess_data():
     np.random.seed(5)
-    perm = np.random.permutation(range(1, number_of_images + 1))
+    perm = np.random.permutation(range(1, IMAGES_COUNT + 1))
     perm = filter_incomplete_images(perm)
     rescale_images(perm)
     generate_masks(perm)

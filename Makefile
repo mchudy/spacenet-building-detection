@@ -17,6 +17,9 @@ preprocess: ## Perform preprocessing of images
 train: ## Train the model
 	python3 ./src/train.py
 
+tensorboard: ## Start TensorBoard
+	tensorboard --logdir ./results/summaries
+
 .DEFAULT_GOAL := help
 .PHONY: help
 
