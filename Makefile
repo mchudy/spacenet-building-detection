@@ -11,6 +11,9 @@ download-data: ## Download SpaceNet data
 clean: ## Clean all generated files
 	find . -name "*.pyc" -exec rm {} \;
 
+preprocess: ## Perform preprocessing of images
+	python3 ./src/preprocess.py
+
 train: ## Train the model
 	python3 ./src/train.py
 
