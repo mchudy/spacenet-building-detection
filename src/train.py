@@ -18,7 +18,7 @@ import preprocess
 
 dataset = 'AOI_1_RIO'
 script_path = os.path.dirname(os.path.realpath(__file__))
-number_of_images = 6940
+number_of_images = 6291
 
 
 def rel_path(path):
@@ -139,8 +139,7 @@ def train():
     test_inputs = []
     test_targets = []
 
-    for i in range(1, IMAGES_COUNT + 1):
-
+    for i in range(IMAGES_COUNT):
         all_inputs.append(i)
         all_targets.append(i)
 

@@ -1,16 +1,8 @@
 import tensorflow as tf
-import pandas as pd
 from osgeo import gdal, osr, ogr
 import numpy as np
 import json
-from matplotlib.collections import PatchCollection
-from matplotlib.patches import Polygon
-import matplotlib.pyplot as plt
 from tqdm import trange
-import datetime
-import time
-import math
-import io
 import os
 from unet import Network
 
@@ -25,7 +17,7 @@ def rel_path(path):
 
 
 def get_mask_image_path(img_number):
-    return rel_path(f'../data/rio/masks/AOI_1_RIO_img{img_number}_mask_visible.tif')
+    return rel_path(f'../data/rio/masks/AOI_1_RIO_img{img_number}_mask.tif')
 
 
 def get_3band_image_path(img_number, scaled=False):
@@ -40,15 +32,47 @@ def get_8band_image_path(img_number, scaled=False):
     return rel_path(f'../data/rio/8band/8band_AOI_1_RIO_img{img_number}.tif')
 
 
-def rescale_images():
+def is_image_incomplete(image):
+    incomplete = True
+    for i in range(1, 4):
+        band = image.GetRasterBand(i)
+        band_array = band.ReadAsArray()
+        size = band.XSize * band.YSize
+        zeros_count = np.count_nonzero(band_array==0)
+        if zeros_count < size / 2:
+            incomplete = False
+
+    return incomplete
+
+
+def filter_incomplete_images(perm):
+    print('Filtering incomplete images...')
+
+    result = []
+    for i in trange(len(perm)):
+        current_image_no = perm[i]
+        img_file = get_3band_image_path(current_image_no)
+        image_3band = gdal.Open(img_file)
+        if not is_image_incomplete(image_3band):
+            result.append(current_image_no)
+
+    print(f'{len(result)}/{len(perm)} images left')
+    return result
+
+
+def rescale_images(perm):
+    print('Scaling images...')
     os.makedirs(rel_path('../data/rio/scaled'), exist_ok=True)
 
-    for i in trange(1, number_of_images + 1):
-        img_file = get_3band_image_path(i)
+    for i in trange(len(perm)):
+        img_no = perm[i]
+        img_file = get_3band_image_path(img_no)
+
         image_3band = gdal.Open(img_file)
+        is_image_incomplete(image_3band)
         gdal.Warp(rel_path(f'../data/rio/scaled/3band_AOI_1_RIO_img{i}.tif'), image_3band, width=Network.IMAGE_WIDTH, height=Network.IMAGE_HEIGHT)
 
-        img_file = get_8band_image_path(i)
+        img_file = get_8band_image_path(img_no)
         image_8band = gdal.Open(img_file)
         gdal.Warp(rel_path(f'../data/rio/scaled/8band_AOI_1_RIO_img{i}.tif'), image_8band, width=Network.IMAGE_WIDTH, height=Network.IMAGE_HEIGHT)
 
@@ -74,19 +98,24 @@ def create_building_mask(rasterSrc, vectorSrc, npDistFileName='',
     dst_ds = 0
 
 
-def generate_masks():
+def generate_masks(perm):
+    print('Generating masks...')
     os.makedirs(rel_path('../data/rio/masks'), exist_ok=True)
 
-    for i in trange(1, number_of_images + 1):
+    for i in trange(len(perm)):
+        image_no = perm[i]
         img_file = get_3band_image_path(i, scaled=True)
-        geojson_file = rel_path(f'../data/rio/vectordata/geojson/Geo_AOI_1_RIO_img{i}.geojson')
-        visible_mask_file = rel_path(f'../data/rio/masks/AOI_1_RIO_img{i}_mask_visible.tif')
-        create_building_mask(img_file, geojson_file, npDistFileName=visible_mask_file, burn_values=255)
+        geojson_file = rel_path(f'../data/rio/vectordata/geojson/Geo_AOI_1_RIO_img{image_no}.geojson')
+        mask_file = rel_path(f'../data/rio/masks/AOI_1_RIO_img{i}_mask.tif')
+        create_building_mask(img_file, geojson_file, npDistFileName=mask_file, burn_values=255)
 
 
 def preprocess_data():
-    rescale_images()
-    generate_masks()
+    np.random.seed(5)
+    perm = np.random.permutation(range(1, number_of_images + 1))
+    perm = filter_incomplete_images(perm)
+    rescale_images(perm)
+    generate_masks(perm)
 
 
 if __name__ == '__main__':
