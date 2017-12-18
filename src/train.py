@@ -112,7 +112,7 @@ def train():
     IMAGES_COUNT = 1000
     TEST_IMAGES_COUNT = 60
     EPOCHS = 5
-    TEST_PERIOD = 20
+    TEST_PERIOD = 100
     BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
 
     network = Network()
