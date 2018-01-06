@@ -107,24 +107,12 @@ def draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, ne
     return buf
 
 
-def jaccard(im1, im2):
-    im1 = np.asarray(im1).astype(np.bool)
-    im2 = np.asarray(im2).astype(np.bool)
-
-    if im1.shape != im2.shape:
-        raise ValueError("Shape mismatch: im1 and im2 must have the same shape.")
-
-    intersection = np.logical_and(im1, im2)
-    union = np.logical_or(im1, im2)
-
-    return intersection.sum() / float(union.sum())
-
-
 def train():
     BATCH_SIZE = 1
     IMAGES_COUNT = 1000
     TEST_IMAGES_COUNT = 60
     EPOCHS = 5
+    TEST_PERIOD = 100
     BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
 
     network = Network()
@@ -195,7 +183,7 @@ def train():
                 batch_inputs = []
                 batch_targets = []
 
-                if batch_num % 100 == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
+                if batch_num % TEST_PERIOD == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
                     print('Testing...')
                     test_inputs = np.reshape(test_inputs, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, network.IMAGE_CHANNELS))
                     test_targets = np.reshape(test_targets, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))

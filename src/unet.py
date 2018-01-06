@@ -109,7 +109,7 @@ class Network:
 
         self.cost = -IOU_(self.segmentation_result, self.targets)
         global_step = tf.train.get_or_create_global_step()
-        self.train_op = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.cost, global_step=global_step)
+        self.train_op = tf.train.AdamOptimizer(learning_rate=0.0005).minimize(self.cost, global_step=global_step)
 
         #self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
         with tf.name_scope('accuracy'):
@@ -117,6 +117,9 @@ class Network:
             correct_pred = tf.cast(tf.equal(argmax_probs, self.targets), tf.float32)
             self.accuracy = tf.reduce_mean(correct_pred)
             tf.summary.scalar('accuracy', self.accuracy)
+            tf.summary.scalar('cost', self.cost)
+
+        with tf.name_scope('cost'):
             tf.summary.scalar('cost', self.cost)
 
         self.summaries = tf.summary.merge_all()
