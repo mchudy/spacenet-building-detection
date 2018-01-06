@@ -14,15 +14,14 @@ import io
 import random
 from unet import Network
 import preprocess
+import csv
 
 
-dataset = 'AOI_1_RIO'
-script_path = os.path.dirname(os.path.realpath(__file__))
-number_of_images = 6291
+SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
 
 
 def rel_path(path):
-    return os.path.join(script_path, path)
+    return os.path.join(SCRIPT_PATH, path)
 
 
 def plot_truth_coords(input_image, mask_image, pixel_coords,
@@ -123,14 +122,15 @@ def jaccard(im1, im2):
 
 def train():
     BATCH_SIZE = 1
-    IMAGES_COUNT = 5000
-    TEST_IMAGES_COUNT = 200
-    EPOCHS = 10
+    IMAGES_COUNT = 1000
+    TEST_IMAGES_COUNT = 60
+    EPOCHS = 5
     BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
 
     network = Network()
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     os.makedirs(os.path.join('models', network.description, timestamp))
+    os.makedirs(rel_path('../results/csv'), exist_ok=True)
 
     all_inputs = []
     all_targets = []
@@ -164,6 +164,7 @@ def train():
         sess.run(tf.global_variables_initializer())
         print('Running session...')
         saver = tf.train.Saver(tf.global_variables(), max_to_keep=None)
+        summary_writer = tf.summary.FileWriter(rel_path('../results/summaries/' + timestamp), graph=sess.graph)
 
         test_accuracies = []
         global_start = time.time()
@@ -191,41 +192,44 @@ def train():
                                                                           EPOCHS * BATCHES_IN_EPOCH,
                                                                           epoch_i + 1, cost, end - start))
 
-                if batch_num % 10 == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
+                batch_inputs = []
+                batch_targets = []
+
+                if batch_num % 100 == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
                     print('Testing...')
                     test_inputs = np.reshape(test_inputs, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, network.IMAGE_CHANNELS))
                     test_targets = np.reshape(test_targets, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
-                    summary, test_accuracy = sess.run([network.summaries, network.accuracy],
+                    summary, test_cost, test_accuracy = sess.run([network.summaries, network.cost, network.accuracy],
                                                     feed_dict={network.inputs: test_inputs,
                                                                 network.targets: test_targets,
                                                                 network.is_training: False})
 
-                    # for i in range(len(test_targets)):
-                    #     flattened = test_targets[i].flatten()
-                    #     test_segmentation_binarized = np.array([0 if x < 0.5 else 255 for x in test_segmentation[i].flatten()])
-                    #     if not any(test_segmentation_binarized) and not any(flattened):
-                    #         print(f'Test case {i}: empty')
-                    #     else:
-                    #         jaccard_index = jaccard(test_targets[i].flatten(), test_segmentation_binarized)
-                    #         print(f'Test case {i}: {jaccard_index}')
-
                     print('Step {}, test accuracy: {}'.format(batch_num, test_accuracy))
+                    print('Cost {}'.format(test_cost))
                     test_accuracies.append((test_accuracy, batch_num))
                     print("Accuracies in time: ", [test_accuracies[x][0] for x in range(len(test_accuracies))])
                     max_acc = max(test_accuracies)
                     print("Best accuracy: {} in batch {}".format(max_acc[0], max_acc[1]))
                     print("Total time: {}".format(time.time() - global_start))
 
-                    n_examples = 8
+                    summary_writer.add_summary(summary, batch_num)
+                    summary_writer.flush()
+
+                    n_examples = 10
                     sample = random.sample(range(TEST_IMAGES_COUNT), n_examples) + [2,3,4,5]
                     test_segmentation = sess.run(network.segmentation_result, feed_dict={
                         network.inputs: np.reshape(test_inputs[sample], [n_examples + 4, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 11])})
-                    test_plot_buf = draw_results(test_inputs[sample], test_targets[sample], test_segmentation, test_accuracy, network,
+                    draw_results(test_inputs[sample], test_targets[sample], test_segmentation, test_accuracy, network,
                                                  batch_num)
 
                     if test_accuracy >= max_acc[0]:
                        checkpoint_path = os.path.join('models', network.description, timestamp, 'model.ckpt')
                        saver.save(sess, checkpoint_path, global_step=batch_num)
+
+                    csv_data=[epoch_i + 1, batch_num, cost, test_cost, test_accuracy]
+                    with open(rel_path('../results/csv/' + timestamp + '.csv'), 'a') as csvfile:
+                        writer = csv.writer(csvfile)
+                        writer.writerow(csv_data)
 
 if __name__ == '__main__':
     train()

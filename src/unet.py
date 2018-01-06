@@ -39,8 +39,8 @@ def upsampling_2D(tensor, name, size=(2, 2)):
 def IOU_(y_pred, y_true):
     H, W, _ = y_pred.get_shape().as_list()[1:]
 
-    pred_flat = tf.reshape(y_pred / 255.0, [-1, H * W])
-    true_flat = tf.reshape(y_true / 255.0, [-1, H * W])
+    pred_flat = tf.reshape(y_pred, [-1, H * W])
+    true_flat = tf.reshape(y_true, [-1, H * W])
 
     intersection = 2 * tf.reduce_sum(pred_flat * true_flat, axis=1) + 1e-7
     denominator = tf.reduce_sum(pred_flat, axis=1) + tf.reduce_sum(true_flat, axis=1) + 1e-7
@@ -48,13 +48,11 @@ def IOU_(y_pred, y_true):
     return tf.reduce_mean(intersection / denominator)
 
 
-def make_train_op(y_pred, y_true):
-    loss = -IOU_(y_pred, y_true)
-
-    global_step = tf.train.get_or_create_global_step()
-
-    optim = tf.train.AdamOptimizer(learning_rate=1e-5)
-    return optim.minimize(loss, global_step=global_step)
+def pixel_wise_softmax_2(output_map):
+    exponential_map = tf.exp(output_map)
+    sum_exp = tf.reduce_sum(exponential_map, 1, keep_dims=True)
+    tensor_sum_exp = tf.tile(sum_exp, tf.stack([1, 1, 1, tf.shape(output_map)[0]]))
+    return tf.div(exponential_map,tensor_sum_exp)
 
 
 class Network:
@@ -71,7 +69,7 @@ class Network:
 
         self.layers = {}
 
-        net = self.inputs
+        net = self.inputs * 2 - 1
 
         conv1, pool1 = conv_conv_pool(net, [32, 32], self.is_training, name=1)
         conv2, pool2 = conv_conv_pool(pool1, [64, 64], self.is_training, name=2)
@@ -96,23 +94,29 @@ class Network:
         #self.segmentation_result = tf.layers.conv2d(net, 1, (1, 1), name='final', activation=tf.nn.sigmoid, padding='same')
         #self.segmentation_result = tf.layers.dense(inputs=tf.sigmoid(net), units=1)
 
-        # logits=tf.reshape(self.segmentation_result, [-1, 1])
-        # trn_labels=tf.reshape(self.targets, [-1, 1])
         # cross_entropy=tf.nn.softmax_cross_entropy_with_logits(logits=logits,labels=trn_labels,name='x_ent')
         # self.cost=tf.reduce_mean(cross_entropy, name='x_ent_mean')
         # self.train_op=tf.train.AdamOptimizer(learning_rate=1e-5).minimize(self.cost)
 
-        # self.cost = -IOU_(self.segmentation_result, self.targets)
-        # global_step = tf.train.get_or_create_global_step()
-        # self.train_op = tf.train.AdamOptimizer(learning_rate=0.0001).minimize(self.cost, global_step=global_step)
+        # logits=tf.reshape(self.segmentation_result, [-1, 1])
+        # trn_labels=tf.reshape(self.targets, [-1, 1])
+        # eps = 1e-5
+        # prediction = pixel_wise_softmax_2(logits)
+        # intersection = tf.reduce_sum(prediction * trn_labels)
+        # union =  eps + tf.reduce_sum(prediction) + tf.reduce_sum(trn_labels)
+        # self.cost = -(2 * intersection/ (union))
+        # self.train_op = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.cost)
 
-        self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
-        self.train_op = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.cost)
+        self.cost = -IOU_(self.segmentation_result, self.targets)
+        global_step = tf.train.get_or_create_global_step()
+        self.train_op = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.cost, global_step=global_step)
 
+        #self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
         with tf.name_scope('accuracy'):
             argmax_probs = tf.round(self.segmentation_result)
             correct_pred = tf.cast(tf.equal(argmax_probs, self.targets), tf.float32)
             self.accuracy = tf.reduce_mean(correct_pred)
             tf.summary.scalar('accuracy', self.accuracy)
+            tf.summary.scalar('cost', self.cost)
 
         self.summaries = tf.summary.merge_all()
