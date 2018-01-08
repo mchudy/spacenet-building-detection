@@ -15,43 +15,17 @@ import random
 from unet import Network
 import preprocess
 import csv
+import pandas as pd
+from greedy_clustering import FindAllClusters
+from tqdm import trange
 
 
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
+pd.options.mode.chained_assignment = None
 
 
 def rel_path(path):
     return os.path.join(SCRIPT_PATH, path)
-
-
-def plot_truth_coords(input_image, mask_image, pixel_coords,
-                  figsize=(8,8),
-                  poly_face_color='orange',
-                  poly_edge_color='red', poly_nofill_color='blue', cmap='bwr'):
-
-    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(2*figsize[0], figsize[1]))
-
-    patches = []
-    patches_nofill = []
-    if len(pixel_coords) > 0:
-        for coord in pixel_coords:
-            patches_nofill.append(Polygon(coord, facecolor=poly_nofill_color,
-                                          edgecolor=poly_edge_color, lw=3))
-            patches.append(Polygon(coord, edgecolor=poly_edge_color, fill=True,
-                                   facecolor=poly_face_color))
-        p0 = PatchCollection(patches, alpha=0.50, match_original=True)
-        p2 = PatchCollection(patches_nofill, alpha=0.75, match_original=True)
-
-    ax0.imshow(input_image)
-    if len(patches) > 0:
-        ax0.add_collection(p0)
-
-    ax1.imshow(mask_image, cmap=cmap)
-
-    plt.tight_layout()
-    plt.show()
-
-    return patches, patches_nofill
 
 
 def convert_geotiff_to_array(image_number, scaled=False, only_rgb=False):
@@ -79,9 +53,14 @@ def convert_target_to_array(image_number):
     return mul_img
 
 
+def convert_dist_transform_to_array(image_number):
+    transformed = np.load(preprocess.get_distance_transform_image_path(image_number) + '.npy')
+    return transformed
+
+
 def draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, network, batch_num):
     n_examples_to_plot = 12
-    fig, axs = plt.subplots(4, n_examples_to_plot, figsize=(n_examples_to_plot * 3, 10))
+    _, axs = plt.subplots(4, n_examples_to_plot, figsize=(n_examples_to_plot * 3, 10))
 
     for example_i in range(n_examples_to_plot):
         axs[0][example_i].imshow(test_inputs[example_i][:,:,:3])
@@ -107,12 +86,25 @@ def draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, ne
     return buf
 
 
+def create_truth_csv(imgs):
+    truth_df = pd.read_csv(rel_path('../data/rio/vectordata/summarydata/AOI_1_RIO_polygons_solution_3band.csv'))
+    with open(rel_path('../output/geojson/truth.csv'), 'w') as fw:
+        fw.write('ImageId,BuildingId,PolygonWKT_Pix,PolygonWKT_Geo\n')
+        for img_no in imgs:
+            image_id = 'AOI_1_RIO_img' + str(img_no)
+            image_df = truth_df[truth_df['ImageId'] == image_id]
+            image_df['ImageId'] = 'AOI_1_RIO_img' + str(img_no)
+            csvv = image_df.to_csv(index=False, header=False)
+            fw.write(csvv)
+
+
 def train():
+    perm = preprocess.get_permutation()
     BATCH_SIZE = 1
     IMAGES_COUNT = 1000
-    TEST_IMAGES_COUNT = 60
+    TEST_IMAGES_COUNT = 30
     EPOCHS = 5
-    TEST_PERIOD = 100
+    TEST_PERIOD = 10
     BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
 
     network = Network()
@@ -131,9 +123,13 @@ def train():
         all_inputs.append(i)
         all_targets.append(i)
 
+    original_test_img_no = []
     for i in range(IMAGES_COUNT + 1, IMAGES_COUNT + 1 + TEST_IMAGES_COUNT):
         test_inputs.append(convert_geotiff_to_array(i, scaled=True))
-        test_targets.append(convert_target_to_array(i))
+        test_targets.append(convert_dist_transform_to_array(i))
+        original_test_img_no.append(perm[i])
+
+    create_truth_csv(original_test_img_no)
 
     def next_batch(batch_pointer):
         inputs = []
@@ -141,7 +137,7 @@ def train():
 
         for i in range(BATCH_SIZE):
             input_image_array = convert_geotiff_to_array(all_inputs[batch_pointer + i], scaled=True)
-            mask_array = convert_target_to_array(all_inputs[batch_pointer + i])
+            mask_array = convert_dist_transform_to_array(all_inputs[batch_pointer + i])
             inputs.append(input_image_array)
             targets.append(mask_array)
 
@@ -206,9 +202,22 @@ def train():
                     n_examples = 10
                     sample = random.sample(range(TEST_IMAGES_COUNT), n_examples) + [2,3,4,5]
                     test_segmentation = sess.run(network.segmentation_result, feed_dict={
-                        network.inputs: np.reshape(test_inputs[sample], [n_examples + 4, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 11])})
-                    draw_results(test_inputs[sample], test_targets[sample], test_segmentation, test_accuracy, network,
+                        network.inputs: np.reshape(test_inputs, [TEST_IMAGES_COUNT, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 11])})
+
+                    print('Drawing sample results...')
+                    draw_results(test_inputs[sample], test_targets[sample], test_segmentation[sample], test_accuracy, network,
                                                  batch_num)
+
+                    print('Clustering results...')
+                    for i in trange(TEST_IMAGES_COUNT):
+                        result = test_segmentation[i]
+                        result = result.reshape(256, 256)
+                        cluster = FindAllClusters(result)
+                        img_no = IMAGES_COUNT + 1 + i
+                        preprocess.CreateGeoJSON('AOI_1_RIO_img' + str(img_no), cluster)
+                        preprocess.FixGeoJSON('AOI_1_RIO_img' + str(img_no))
+
+                    preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + timestamp + '.csv'), perm)
 
                     if test_accuracy >= max_acc[0]:
                        checkpoint_path = os.path.join('models', network.description, timestamp, 'model.ckpt')

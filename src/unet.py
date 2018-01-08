@@ -107,11 +107,11 @@ class Network:
         # self.cost = -(2 * intersection/ (union))
         # self.train_op = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.cost)
 
-        self.cost = -IOU_(self.segmentation_result, self.targets)
+        #self.cost = -IOU_(self.segmentation_result, self.targets)
+        self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
         global_step = tf.train.get_or_create_global_step()
         self.train_op = tf.train.AdamOptimizer(learning_rate=0.0005).minimize(self.cost, global_step=global_step)
 
-        #self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
         with tf.name_scope('accuracy'):
             argmax_probs = tf.round(self.segmentation_result)
             correct_pred = tf.cast(tf.equal(argmax_probs, self.targets), tf.float32)

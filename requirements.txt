@@ -4,3 +4,4 @@ pandas
 gdal
 matplotlib
 tqdm
+scikit-image

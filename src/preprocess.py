@@ -7,9 +7,14 @@ import os
 from unet import Network
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Polygon
+from greedy_clustering import FindAllClusters
 import matplotlib.pyplot as plt
 import sys
-
+import pandas as pd
+import cv2
+import skimage.draw
+import skimage.io
+import re
 
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
 IMAGES_COUNT = 6940
@@ -24,23 +29,34 @@ sys.path.extend([path_to_spacenet_utils])
 from spaceNetUtilities import geoTools as gT
 
 
+def convert_geotiff_to_array(image_number, scaled=False):
+    image_3band = gdal.Open(get_3band_image_path(image_number, scaled))
+    channels = image_3band.RasterCount
+    mul_img = np.zeros((image_3band.RasterXSize, image_3band.RasterYSize, channels), dtype='float')
+
+    for band in range(0, image_3band.RasterCount):
+        mul_img[:,:,band] = image_3band.GetRasterBand(band+1).ReadAsArray().astype(float) / 255.0
+
+    return mul_img
+
+
+def convert_target_to_array(image_number):
+    image = gdal.Open(get_mask_image_path(image_number))
+    channels = image.RasterCount
+    mul_img = np.zeros((image.RasterXSize, image.RasterYSize, channels), dtype='float')
+    mul_img[:,:, 0] = image.GetRasterBand(1).ReadAsArray().astype(float) / 255.0
+
+    return mul_img
+
+
+
 def create_dist_map(rasterSrc, vectorSrc, npDistFileName='',
-                           noDataValue=0, burn_values=1,
+                           noDataValue=0, burn_values=255,
                            dist_mult=1, vmax_dist=64):
 
-    '''
-    Create building signed distance transform from Yuan 2016
-    (https://arxiv.org/pdf/1602.06564v1.pdf).
-    vmax_dist: absolute value of maximum distance (meters) from building edge
-    Adapted from createNPPixArray in labeltools
-    '''
-
-    ## open source vector file that truth data
     source_ds = ogr.Open(vectorSrc)
     source_layer = source_ds.GetLayer()
 
-    ## extract data from src Raster File to be emulated
-    ## open raster file that is to be emulated
     srcRas_ds = gdal.Open(rasterSrc)
     cols = srcRas_ds.RasterXSize
     rows = srcRas_ds.RasterYSize
@@ -85,7 +101,6 @@ def create_dist_map(rasterSrc, vectorSrc, npDistFileName='',
     proxInBand.SetNoDataValue(noDataValue)
     opt_string2 = 'VALUES='+str(noDataValue)
     options = [opt_string, opt_string2]
-    #options = ['NODATA=0', 'VALUES=0']
 
     gdal.ComputeProximity(srcBand, proxInBand, options)
 
@@ -96,28 +111,22 @@ def create_dist_map(rasterSrc, vectorSrc, npDistFileName='',
     proxTotal = proxTotal*metersIndex
     proxTotal *= dist_mult
 
-    # clip array
     proxTotal = np.clip(proxTotal, -1*vmax_dist, 1*vmax_dist)
 
     if npDistFileName != '':
-        # save as numpy file since some values will be negative
         np.save(npDistFileName, proxTotal)
-        #cv2.imwrite(npDistFileName, proxTotal)
 
 
 def plot_dist_transform(input_image, pixel_coords, dist_image,
                         figsize=(8,8), plot_name='', add_title=False,
-                        colorbar=True,
+                        colorbar=True, mask_image='',
                         poly_face_color='orange', poly_edge_color='red',
                         poly_nofill_color='blue', cmap='bwr'):
-    '''Explore distance transform'''
-
     fig, (ax0, ax1, ax2) = plt.subplots(1, 3,
                                         figsize=(3*figsize[0], figsize[1]))
 
     #fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(2*figsize[0], figsize[1]))
     mind, maxd = np.round(np.min(dist_image),2), np.round(np.max(dist_image),2)
-
     if add_title:
         suptitle = fig.suptitle(plot_name.split('/')[-1], fontsize='large')
 
@@ -135,56 +144,20 @@ def plot_dist_transform(input_image, pixel_coords, dist_image,
         p1 = PatchCollection(patches, alpha=0.75, match_original=True)
         #p2 = PatchCollection(patches_nofill, alpha=0.75, match_original=True)
 
-    #if len(patches) > 0:
-    #    p0 = PatchCollection(patches, alpha=0.25, match_original=True)
-    #    p1 = PatchCollection(patches, alpha=0.75, match_original=True)
-
-
-    # ax0: raw image
-    ax0.imshow(input_image)
+    ax0.imshow(input_image[:,:,:3])
     if len(patches) > 0:
         ax0.add_collection(p0)
     ax0.set_title('Input Image + Ground Truth Buildings')
 
-    ## truth polygons
-    #zero_arr = np.zeros(input_image.shape[:2])
-    ## set background to white?
-    ##zero_arr[zero_arr == 0.0] = np.nan
-    #ax1.imshow(zero_arr, cmap=cmap)
-    #if len(patches) > 0:
-    #    ax1.add_collection(p1)
-    #ax1.set_title('Ground Truth Building Outlines')
-
-    # transform
-    cbar_pointer = ax1.imshow(dist_image)
-    dist_suffix = " (min=" + str(mind) + ", max=" + str(maxd) + ")"
-    ax1.set_title("Yuan 2016 Distance Transform" + dist_suffix)
-
-    # overlay buildings on distance transform
+    ax1.set_title("Ground truth")
+    ax1.imshow(mask_image[:,:,0], cmap='gray')
     ax2.imshow(dist_image)
-    # truth polygons
     if len(patches) > 0:
         ax2.add_collection(p1)
-    # truth mask
-    #ax2.imshow(z, cmap=palette, alpha=0.5,
-    #       norm=matplotlib.colors.Normalize(vmin=0.5, vmax=0.9, clip=False))
-    ax2.set_title("Ground Truth Polygons Overlaid on Distance Transform")
 
-    if colorbar:
-        #from mpl_toolkits.axes_grid1 import make_axes_locatable
-        #divider = make_axes_locatable(ax2)
-        #cax = divider.append_axes('right', size='5%', pad=0.05)
-        #fig.colorbar(cbar_pointer, cax=cax, orientation='vertical')
-        left, bottom, width, height = [0.38, 0.85, 0.24, 0.03]
-        cax = fig.add_axes([left, bottom, width, height])
-        fig.colorbar(cbar_pointer, cax=cax, orientation='horizontal')
+    ax2.set_title("Distance Transform")
 
-    #plt.axis('off')
-    plt.tight_layout()
-    if add_title:
-        suptitle.set_y(0.95)
-        fig.subplots_adjust(top=0.96)
-    #plt.show()
+    plt.show()
 
     if len(plot_name) > 0:
         plt.savefig(plot_name)
@@ -238,21 +211,18 @@ def filter_incomplete_images(perm):
     return result
 
 
+def rescale_image(source_image, target_image):
+    os.system(f'gdalwarp -ts 256 256 -r cubic -overwrite {source_image} {target_image} > /dev/null')
+
+
 def rescale_images(perm):
     print('Scaling images...')
     os.makedirs(rel_path('../data/rio/scaled'), exist_ok=True)
 
     for i in trange(len(perm)):
         img_no = perm[i]
-        img_file = get_3band_image_path(img_no)
-
-        image_3band = gdal.Open(img_file)
-        is_image_incomplete(image_3band)
-        gdal.Warp(rel_path(f'../data/rio/scaled/3band_AOI_1_RIO_img{i}.tif'), image_3band, width=Network.IMAGE_WIDTH, height=Network.IMAGE_HEIGHT)
-
-        img_file = get_8band_image_path(img_no)
-        image_8band = gdal.Open(img_file)
-        gdal.Warp(rel_path(f'../data/rio/scaled/8band_AOI_1_RIO_img{i}.tif'), image_8band, width=Network.IMAGE_WIDTH, height=Network.IMAGE_HEIGHT)
+        rescale_image(get_3band_image_path(img_no), rel_path(f'../data/rio/scaled/3band_AOI_1_RIO_img{i}.tif'))
+        rescale_image(get_8band_image_path(img_no), rel_path(f'../data/rio/scaled/8band_AOI_1_RIO_img{i}.tif'))
 
 
 def create_building_mask(rasterSrc, vectorSrc, npDistFileName='',
@@ -297,17 +267,130 @@ def generate_distance_transforms(perm):
         img_file = get_3band_image_path(i, scaled=True)
         geojson_file = rel_path(f'../data/rio/vectordata/geojson/Geo_AOI_1_RIO_img{image_no}.geojson')
         mask_file = rel_path(f'../data/rio/dist_transforms/AOI_1_RIO_img{i}_mask.tif')
-        create_dist_map(img_file, geojson_file, npDistFileName=mask_file, burn_values=255)
+        create_dist_map(img_file, geojson_file, npDistFileName=mask_file, vmax_dist=16)
 
 
-def preprocess_data():
+def CreateGeoJSON ( fn, cluster ):
+    os.makedirs(rel_path('../output/geojson'), exist_ok=True)
+
+    memdrv = gdal.GetDriverByName ('MEM')
+    src_ds = memdrv.Create('',cluster.shape[1],cluster.shape[0],1)
+    src_ds.SetGeoTransform([0, 1, 0, 0, 0, 1])
+    band = src_ds.GetRasterBand(1)
+    band.WriteArray(cluster)
+    dst_layername = "BuildingID"
+    drv = ogr.GetDriverByName("geojson")
+
+    if os.path.exists(rel_path('../output/geojson/' + fn  + ".geojson")):
+        drv.DeleteDataSource(rel_path('../output/geojson/' + fn + ".geojson"))
+
+    dst_ds = drv.CreateDataSource ( rel_path('../output/geojson/' + fn + ".geojson"))
+    dst_layer = dst_ds.CreateLayer( dst_layername, srs=None )
+    dst_layer.CreateField( ogr.FieldDefn("DN", ogr.OFTInteger) )
+    gdal.Polygonize( band  , None, dst_layer, 0, ['8CONNECTED=8'], callback=None )
+
+
+def FixGeoJSON( fn ):
+    buf_dist = 0.0
+    dst_layername = "BuildingID"
+    drv = ogr.GetDriverByName("geojson")
+    dst_ds = drv.Open ( rel_path('../output/geojson/' + fn + ".geojson"))
+    dst_layer = dst_ds.GetLayer(0)
+    if os.path.exists(rel_path('../output/geojson/buffer' + fn + ".geojson")):
+        drv.DeleteDataSource(rel_path('../output/geojson/buffer' + fn + ".geojson"))
+    adst_ds = drv.CreateDataSource ( rel_path('../output/geojson/buffer' + fn + ".geojson"))
+    adst_layer = adst_ds.CreateLayer( dst_layername, srs=None )
+    adst_layer.CreateField( ogr.FieldDefn("DN", ogr.OFTInteger) )
+
+    for i in range(dst_layer.GetFeatureCount()):
+        f = dst_layer.GetFeature(i)
+        clusternumber = f.GetField("DN")
+        f.SetGeometry(f.GetGeometryRef().Buffer(buf_dist))
+        if 0 == f.GetField("DN"):
+            dst_layer.DeleteFeature(i) #not supported by geoJSON driver now
+        else:
+            adst_layer.CreateFeature(f)
+
+
+def ParseGeoJSON( fn, perm ):
+    with open(rel_path('../output/geojson/' + fn)) as f:
+        polygon_list = json.load(f)['features']
+        if len(polygon_list) == 0:
+            yield '{},-1,POLYGON EMPTY,1'.format(fn)
+        else:
+            img_shape = (256, 256)
+            check_img = np.zeros(img_shape)
+            for polygon in polygon_list:
+                dn = polygon['properties']['DN']
+                coords_raw = polygon['geometry']['coordinates'][0]
+                if isinstance(coords_raw[0][0], (list,)):
+                    continue
+                pp = [
+                        [int(p[1]) for p in coords_raw],
+                        [int(p[0]) for p in coords_raw]
+                    ]
+                rr, cc = skimage.draw.polygon(pp, img_shape)
+                check_img[rr,cc] = 1
+
+                coords = ','.join((str(co[0]*440/256) + ' ' + str(co[1]*408/256) + ' 0' for co in coords_raw))
+                image_name = fn[6:-8]
+                match = re.search('img(\\d+)$', image_name)
+                img_no = int(match.groups()[0])
+                img_no = perm[img_no]
+                image_name = f'AOI_1_RIO_img{img_no}'
+                yield '{},{},"POLYGON (({}))",{}'.format(image_name, dn, coords, dn)
+
+
+def merge_results(path, out_filepath, perm):
+    with open(out_filepath, 'w') as fw:
+        fw.write('ImageId,BuildingId,PolygonWKT_Pix,Confidence\n')
+        for fn in [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f)) and 'buffer' in f]:
+            lines = ParseGeoJSON(fn, perm)
+            for li in lines: fw.write(li + '\n')
+
+
+def create_truth_csv(imgs):
+    truth_df = pd.read_csv(rel_path('../data/rio/vectordata/summarydata/AOI_1_RIO_polygons_solution_3band.csv'))
+    with open(rel_path('../output/geojson/truth.csv'), 'w') as fw:
+        fw.write('ImageId,BuildingId,PolygonWKT_Pix,PolygonWKT_Geo\n')
+        for img_no in imgs:
+            image_id = 'AOI_1_RIO_img' + str(img_no)
+            image_df = truth_df[truth_df['ImageId'] == image_id]
+            image_df['ImageId'] = 'AOI_1_RIO_img' + str(img_no)
+            csv = image_df.to_csv(index=False, header=False)
+            fw.write(csv)
+
+
+def get_permutation():
     np.random.seed(5)
     perm = np.random.permutation(range(1, IMAGES_COUNT + 1))
     perm = filter_incomplete_images(perm)
-    rescale_images(perm)
-    generate_masks(perm)
-    generate_distance_transforms(perm)
-    #plot_dist_transform(get_3band_image_path(1), [], get_distance_transform_image_path(1))
+    return perm
+
+
+def preprocess_data():
+    perm = get_permutation()
+    #rescale_images(perm)
+    #generate_masks(perm)
+    generate_distance_transforms(perm[:10])
+
+    img_no = 0
+    plot_dist_transform(
+        convert_geotiff_to_array(img_no, scaled=True),
+        [],
+        np.load(get_distance_transform_image_path(img_no) + '.npy'),
+        mask_image=convert_target_to_array(img_no))
+    intensity = np.load(get_distance_transform_image_path(img_no) + '.npy')
+    # xmax, xmin = intensity.max(), intensity.min()
+    #intensity = (intensity - xmin)/(xmax - xmin)
+    cluster = FindAllClusters(intensity)
+    np.save('./cluster', cluster)
+    ccc = np.load('./cluster.npy')
+    CreateGeoJSON('AOI_1_RIO_img' + str(img_no), ccc)
+    FixGeoJSON('AOI_1_RIO_img' + str(img_no))
+    create_truth_csv([perm[img_no]])
+    merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result.csv'), perm)
+    #print(ccc)
 
 
 if __name__ == '__main__':
