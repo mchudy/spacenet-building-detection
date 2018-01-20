@@ -24,6 +24,16 @@ SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
 pd.options.mode.chained_assignment = None
 
 
+BATCH_SIZE = 1
+IMAGES_COUNT = 5000
+TEST_IMAGES_COUNT = 20
+EPOCHS = 5
+TEST_PERIOD = 10
+BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
+TEST_BATCH_SIZE = 10
+TEST_BATCH_COUNT = int(TEST_IMAGES_COUNT / TEST_BATCH_SIZE)
+
+
 def rel_path(path):
     return os.path.join(SCRIPT_PATH, path)
 
@@ -60,7 +70,7 @@ def convert_dist_transform_to_array(image_number):
 
 
 def draw_results(test_inputs, test_targets, test_segmentation, network, batch_num):
-    n_examples_to_plot = 12
+    n_examples_to_plot = len(test_inputs)
     _, axs = plt.subplots(4, n_examples_to_plot, figsize=(n_examples_to_plot * 3, 10))
 
     for example_i in range(n_examples_to_plot):
@@ -101,15 +111,6 @@ def create_truth_csv(imgs):
 
 
 def train():
-    BATCH_SIZE = 1
-    IMAGES_COUNT = 5000
-    TEST_IMAGES_COUNT = 20
-    EPOCHS = 5
-    TEST_PERIOD = 10
-    BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
-    TEST_BATCH_SIZE = 10
-    TEST_BATCH_COUNT = int(TEST_IMAGES_COUNT / TEST_BATCH_SIZE)
-
     network = Network()
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     os.makedirs(os.path.join('models', network.description, timestamp))
@@ -153,11 +154,11 @@ def train():
     def next_test_batch(test_batch_num):
         test_inputs = []
         test_targets = []
-        for i in range(IMAGES_COUNT + 1 + test_batch_num * TEST_BATCH_SIZE, IMAGES_COUNT + 1 + TEST_IMAGES_COUNT + (test_batch_num + 1) * TEST_BATCH_SIZE):
+        for i in range(IMAGES_COUNT + 1 + test_batch_num * TEST_BATCH_SIZE, IMAGES_COUNT + 1 + (test_batch_num + 1) * TEST_BATCH_SIZE):
             test_inputs.append(convert_geotiff_to_array(i, scaled=True))
             test_targets.append(convert_target_to_array(i))
-        test_inputs = np.reshape(test_inputs, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, network.IMAGE_CHANNELS))
-        test_targets = np.reshape(test_targets, (BATCH_SIZE, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
+        test_inputs = np.reshape(np.array(test_inputs), (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, network.IMAGE_CHANNELS))
+        test_targets = np.reshape(np.array(test_targets), (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
         return test_inputs, test_targets
 
 
@@ -216,7 +217,8 @@ def train():
                         test_segmentation = np.concatenate((test_segmentation, batch_test_segmentation))
 
                         print('Drawing sample results...')
-                        draw_results(batch_inputs, batch_targets, batch_test_segmentation, network, batch_num + ' ' + i)
+                        if i < 3:
+                            draw_results(batch_inputs, batch_targets, batch_test_segmentation, network, f'{batch_num}_{i}')
 
                         # print('Clustering results...')
                         # for i in trange(TEST_BATCH_SIZE):
@@ -237,9 +239,6 @@ def train():
                     max_acc = max(test_accuracies)
                     print("Best accuracy: {} in batch {}".format(max_acc[0], max_acc[1]))
                     print("Total time: {}".format(time.time() - global_start))
-
-                    n_examples = 10
-                    sample = random.sample(range(TEST_IMAGES_COUNT), n_examples) + [2,3,4,5,6]
 
                     preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S") + '.csv'), perm)
                     preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S") + 'tr.csv'), perm, transpose=True)
