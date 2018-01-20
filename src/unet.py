@@ -69,57 +69,57 @@ class Network:
 
         self.layers = {}
 
-        net = self.inputs * 2 - 1
+        with tf.device('/gpu:0'):
+            net = self.inputs * 2 - 1
 
-        conv1, pool1 = conv_conv_pool(net, [32, 32], self.is_training, name=1)
-        conv2, pool2 = conv_conv_pool(pool1, [64, 64], self.is_training, name=2)
-        conv3, pool3 = conv_conv_pool(pool2, [128, 128], self.is_training, name=3)
-        conv4, pool4 = conv_conv_pool(pool3, [256, 256], self.is_training, name=4)
-        conv5 = conv_conv_pool(pool4, [512, 512], self.is_training, name=5, pool=False)
+            conv1, pool1 = conv_conv_pool(net, [32, 32], self.is_training, name=1)
+            conv2, pool2 = conv_conv_pool(pool1, [64, 64], self.is_training, name=2)
+            conv3, pool3 = conv_conv_pool(pool2, [128, 128], self.is_training, name=3)
+            conv4, pool4 = conv_conv_pool(pool3, [256, 256], self.is_training, name=4)
+            conv5 = conv_conv_pool(pool4, [512, 512], self.is_training, name=5, pool=False)
 
-        up6 = upsample_concat(conv5, conv4, name=6)
-        conv6 = conv_conv_pool(up6, [256, 256], self.is_training, name=6, pool=False)
+            up6 = upsample_concat(conv5, conv4, name=6)
+            conv6 = conv_conv_pool(up6, [256, 256], self.is_training, name=6, pool=False)
 
-        up7 = upsample_concat(conv6, conv3, name=7)
-        conv7 = conv_conv_pool(up7, [128, 128], self.is_training, name=7, pool=False)
+            up7 = upsample_concat(conv6, conv3, name=7)
+            conv7 = conv_conv_pool(up7, [128, 128], self.is_training, name=7, pool=False)
 
-        up8 = upsample_concat(conv7, conv2, name=8)
-        conv8 = conv_conv_pool(up8, [64, 64], self.is_training, name=8, pool=False)
+            up8 = upsample_concat(conv7, conv2, name=8)
+            conv8 = conv_conv_pool(up8, [64, 64], self.is_training, name=8, pool=False)
 
-        up9 = upsample_concat(conv8, conv1, name=9)
-        conv9 = conv_conv_pool(up9, [32, 32], self.is_training, name=9, pool=False)
+            up9 = upsample_concat(conv8, conv1, name=9)
+            conv9 = conv_conv_pool(up9, [32, 32], self.is_training, name=9, pool=False)
 
-        self.segmentation_result = tf.layers.conv2d(conv9, 1, (1, 1), name='final', activation=tf.nn.sigmoid, padding='same')
+            self.segmentation_result = tf.layers.conv2d(conv9, 1, (1, 1), name='final', activation=tf.nn.sigmoid, padding='same')
+            #self.segmentation_result = tf.layers.conv2d(net, 1, (1, 1), name='final', activation=tf.nn.sigmoid, padding='same')
+            #self.segmentation_result = tf.layers.dense(inputs=tf.sigmoid(conv9), units=1)
 
-        #self.segmentation_result = tf.layers.conv2d(net, 1, (1, 1), name='final', activation=tf.nn.sigmoid, padding='same')
-        #self.segmentation_result = tf.layers.dense(inputs=tf.sigmoid(net), units=1)
+            # cross_entropy=tf.nn.softmax_cross_entropy_with_logits(logits=logits,labels=trn_labels,name='x_ent')
+            # self.cost=tf.reduce_mean(cross_entropy, name='x_ent_mean')
+            # self.train_op=tf.train.AdamOptimizer(learning_rate=1e-5).minimize(self.cost)
 
-        # cross_entropy=tf.nn.softmax_cross_entropy_with_logits(logits=logits,labels=trn_labels,name='x_ent')
-        # self.cost=tf.reduce_mean(cross_entropy, name='x_ent_mean')
-        # self.train_op=tf.train.AdamOptimizer(learning_rate=1e-5).minimize(self.cost)
+            # logits=tf.reshape(self.segmentation_result, [-1, 1])
+            # trn_labels=tf.reshape(self.targets, [-1, 1])
+            # eps = 1e-5
+            # prediction = pixel_wise_softmax_2(logits)
+            # intersection = tf.reduce_sum(prediction * trn_labels)
+            # union =  eps + tf.reduce_sum(prediction) + tf.reduce_sum(trn_labels)
+            # self.cost = -(2 * intersection/ (union))
+            # self.train_op = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.cost)
 
-        # logits=tf.reshape(self.segmentation_result, [-1, 1])
-        # trn_labels=tf.reshape(self.targets, [-1, 1])
-        # eps = 1e-5
-        # prediction = pixel_wise_softmax_2(logits)
-        # intersection = tf.reduce_sum(prediction * trn_labels)
-        # union =  eps + tf.reduce_sum(prediction) + tf.reduce_sum(trn_labels)
-        # self.cost = -(2 * intersection/ (union))
-        # self.train_op = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.cost)
+            self.cost = -IOU_(self.segmentation_result, self.targets)
+            #self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
+            global_step = tf.train.get_or_create_global_step()
+            self.train_op = tf.train.AdamOptimizer(learning_rate=0.0005).minimize(self.cost, global_step=global_step)
 
-        #self.cost = -IOU_(self.segmentation_result, self.targets)
-        self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
-        global_step = tf.train.get_or_create_global_step()
-        self.train_op = tf.train.AdamOptimizer(learning_rate=0.0005).minimize(self.cost, global_step=global_step)
+            with tf.name_scope('accuracy'):
+                argmax_probs = tf.round(self.segmentation_result)
+                correct_pred = tf.cast(tf.equal(argmax_probs, self.targets), tf.float32)
+                self.accuracy = tf.reduce_mean(correct_pred)
+                tf.summary.scalar('accuracy', self.accuracy)
+                tf.summary.scalar('cost', self.cost)
 
-        with tf.name_scope('accuracy'):
-            argmax_probs = tf.round(self.segmentation_result)
-            correct_pred = tf.cast(tf.equal(argmax_probs, self.targets), tf.float32)
-            self.accuracy = tf.reduce_mean(correct_pred)
-            tf.summary.scalar('accuracy', self.accuracy)
-            tf.summary.scalar('cost', self.cost)
+            with tf.name_scope('cost'):
+                tf.summary.scalar('cost', self.cost)
 
-        with tf.name_scope('cost'):
-            tf.summary.scalar('cost', self.cost)
-
-        self.summaries = tf.summary.merge_all()
+            self.summaries = tf.summary.merge_all()

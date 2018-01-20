@@ -267,7 +267,7 @@ def generate_distance_transforms(perm):
         img_file = get_3band_image_path(i, scaled=True)
         geojson_file = rel_path(f'../data/rio/vectordata/geojson/Geo_AOI_1_RIO_img{image_no}.geojson')
         mask_file = rel_path(f'../data/rio/dist_transforms/AOI_1_RIO_img{i}_mask.tif')
-        create_dist_map(img_file, geojson_file, npDistFileName=mask_file, vmax_dist=16)
+        create_dist_map(img_file, geojson_file, npDistFileName=mask_file, vmax_dist=32)
 
 
 def CreateGeoJSON ( fn, cluster ):
@@ -312,7 +312,7 @@ def FixGeoJSON( fn ):
             adst_layer.CreateFeature(f)
 
 
-def ParseGeoJSON( fn, perm ):
+def ParseGeoJSON( fn, perm,transpose=False ):
     with open(rel_path('../output/geojson/' + fn)) as f:
         polygon_list = json.load(f)['features']
         if len(polygon_list) == 0:
@@ -331,8 +331,10 @@ def ParseGeoJSON( fn, perm ):
                     ]
                 rr, cc = skimage.draw.polygon(pp, img_shape)
                 check_img[rr,cc] = 1
-
-                coords = ','.join((str(co[0]*440/256) + ' ' + str(co[1]*408/256) + ' 0' for co in coords_raw))
+                if transpose:
+                    coords = ','.join((str(co[1]*440/256) + ' ' + str(co[0]*408/256) + ' 0' for co in coords_raw))
+                else:
+                    coords = ','.join((str(co[0]*440/256) + ' ' + str(co[1]*408/256) + ' 0' for co in coords_raw))
                 image_name = fn[6:-8]
                 match = re.search('img(\\d+)$', image_name)
                 img_no = int(match.groups()[0])
@@ -341,11 +343,11 @@ def ParseGeoJSON( fn, perm ):
                 yield '{},{},"POLYGON (({}))",{}'.format(image_name, dn, coords, dn)
 
 
-def merge_results(path, out_filepath, perm):
+def merge_results(path, out_filepath, perm, transpose=False):
     with open(out_filepath, 'w') as fw:
         fw.write('ImageId,BuildingId,PolygonWKT_Pix,Confidence\n')
         for fn in [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f)) and 'buffer' in f]:
-            lines = ParseGeoJSON(fn, perm)
+            lines = ParseGeoJSON(fn, perm, transpose)
             for li in lines: fw.write(li + '\n')
 
 
@@ -372,7 +374,7 @@ def preprocess_data():
     perm = get_permutation()
     #rescale_images(perm)
     #generate_masks(perm)
-    generate_distance_transforms(perm[:10])
+    generate_distance_transforms(perm)
 
     img_no = 0
     plot_dist_transform(
@@ -380,17 +382,17 @@ def preprocess_data():
         [],
         np.load(get_distance_transform_image_path(img_no) + '.npy'),
         mask_image=convert_target_to_array(img_no))
-    intensity = np.load(get_distance_transform_image_path(img_no) + '.npy')
-    # xmax, xmin = intensity.max(), intensity.min()
-    #intensity = (intensity - xmin)/(xmax - xmin)
-    cluster = FindAllClusters(intensity)
-    np.save('./cluster', cluster)
-    ccc = np.load('./cluster.npy')
-    CreateGeoJSON('AOI_1_RIO_img' + str(img_no), ccc)
-    FixGeoJSON('AOI_1_RIO_img' + str(img_no))
-    create_truth_csv([perm[img_no]])
-    merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result.csv'), perm)
-    #print(ccc)
+    # intensity = np.load(get_distance_transform_image_path(img_no) + '.npy')
+    # # xmax, xmin = intensity.max(), intensity.min()
+    # #intensity = (intensity - xmin)/(xmax - xmin)
+    # cluster = FindAllClusters(intensity)
+    # np.save('./cluster', cluster)
+    # ccc = np.load('./cluster.npy')
+    # CreateGeoJSON('AOI_1_RIO_img' + str(img_no), ccc)
+    # FixGeoJSON('AOI_1_RIO_img' + str(img_no))
+    # create_truth_csv([perm[img_no]])
+    # merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result.csv'), perm)
+    # #print(ccc)
 
 
 if __name__ == '__main__':

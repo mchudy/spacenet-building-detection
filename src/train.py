@@ -28,7 +28,7 @@ def rel_path(path):
     return os.path.join(SCRIPT_PATH, path)
 
 
-def convert_geotiff_to_array(image_number, scaled=False, only_rgb=False):
+def convert_geotiff_to_array(image_number, scaled=False):
     image_3band = gdal.Open(preprocess.get_3band_image_path(image_number, scaled))
     image_8band = gdal.Open(preprocess.get_8band_image_path(image_number, scaled))
     channels = image_3band.RasterCount + image_8band.RasterCount
@@ -55,10 +55,11 @@ def convert_target_to_array(image_number):
 
 def convert_dist_transform_to_array(image_number):
     transformed = np.load(preprocess.get_distance_transform_image_path(image_number) + '.npy')
-    return transformed
+    normalized = 2*(transformed-transformed.min())/(transformed.max()-transformed.min()) - 1
+    return np.nan_to_num(normalized)
 
 
-def draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, network, batch_num):
+def draw_results(test_inputs, test_targets, test_segmentation, network, batch_num):
     n_examples_to_plot = 12
     _, axs = plt.subplots(4, n_examples_to_plot, figsize=(n_examples_to_plot * 3, 10))
 
@@ -82,11 +83,12 @@ def draw_results(test_inputs, test_targets, test_segmentation, test_accuracy, ne
     if not os.path.exists(IMAGE_PLOT_DIR):
         os.makedirs(IMAGE_PLOT_DIR)
 
-    plt.savefig('{}/figure{}.jpg'.format(IMAGE_PLOT_DIR, batch_num))
+    plt.savefig('{}/batch_{}.jpg'.format(IMAGE_PLOT_DIR, batch_num))
     return buf
 
 
 def create_truth_csv(imgs):
+    os.makedirs(rel_path('../output/geojson'), exist_ok=True)
     truth_df = pd.read_csv(rel_path('../data/rio/vectordata/summarydata/AOI_1_RIO_polygons_solution_3band.csv'))
     with open(rel_path('../output/geojson/truth.csv'), 'w') as fw:
         fw.write('ImageId,BuildingId,PolygonWKT_Pix,PolygonWKT_Geo\n')
@@ -99,37 +101,40 @@ def create_truth_csv(imgs):
 
 
 def train():
-    perm = preprocess.get_permutation()
     BATCH_SIZE = 1
-    IMAGES_COUNT = 1000
-    TEST_IMAGES_COUNT = 30
+    IMAGES_COUNT = 5000
+    TEST_IMAGES_COUNT = 20
     EPOCHS = 5
     TEST_PERIOD = 10
     BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
+    TEST_BATCH_SIZE = 10
+    TEST_BATCH_COUNT = int(TEST_IMAGES_COUNT / TEST_BATCH_SIZE)
 
     network = Network()
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     os.makedirs(os.path.join('models', network.description, timestamp))
     os.makedirs(rel_path('../results/csv'), exist_ok=True)
 
+    # perm = preprocess.get_permutation()
+    # np.save(rel_path('../results/perm'), perm)
+
+    perm = np.load(rel_path('../results/perm.npy'))
+
     all_inputs = []
     all_targets = []
     batch_pointer = 0
 
-    test_inputs = []
-    test_targets = []
+    original_test_img_no = []
+
+    for i in range(IMAGES_COUNT + 1, IMAGES_COUNT + 1 + TEST_IMAGES_COUNT):
+        original_test_img_no.append(perm[i])
+
+    create_truth_csv(original_test_img_no)
 
     for i in range(IMAGES_COUNT):
         all_inputs.append(i)
         all_targets.append(i)
 
-    original_test_img_no = []
-    for i in range(IMAGES_COUNT + 1, IMAGES_COUNT + 1 + TEST_IMAGES_COUNT):
-        test_inputs.append(convert_geotiff_to_array(i, scaled=True))
-        test_targets.append(convert_dist_transform_to_array(i))
-        original_test_img_no.append(perm[i])
-
-    create_truth_csv(original_test_img_no)
 
     def next_batch(batch_pointer):
         inputs = []
@@ -137,18 +142,31 @@ def train():
 
         for i in range(BATCH_SIZE):
             input_image_array = convert_geotiff_to_array(all_inputs[batch_pointer + i], scaled=True)
-            mask_array = convert_dist_transform_to_array(all_inputs[batch_pointer + i])
+            mask_array = convert_target_to_array(all_inputs[batch_pointer + i])
             inputs.append(input_image_array)
             targets.append(mask_array)
 
         batch_pointer += BATCH_SIZE
         return np.array(inputs), np.array(targets)
 
-    with tf.Session() as sess:
+
+    def next_test_batch(test_batch_num):
+        test_inputs = []
+        test_targets = []
+        for i in range(IMAGES_COUNT + 1 + test_batch_num * TEST_BATCH_SIZE, IMAGES_COUNT + 1 + TEST_IMAGES_COUNT + (test_batch_num + 1) * TEST_BATCH_SIZE):
+            test_inputs.append(convert_geotiff_to_array(i, scaled=True))
+            test_targets.append(convert_target_to_array(i))
+        test_inputs = np.reshape(test_inputs, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, network.IMAGE_CHANNELS))
+        test_targets = np.reshape(test_targets, (BATCH_SIZE, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
+        return test_inputs, test_targets
+
+
+    config = tf.ConfigProto(allow_soft_placement = True)
+    config.gpu_options.allocator_type = 'BFC'
+    with tf.Session(config=config) as sess:
         sess.run(tf.global_variables_initializer())
         print('Running session...')
         saver = tf.train.Saver(tf.global_variables(), max_to_keep=None)
-        summary_writer = tf.summary.FileWriter(rel_path('../results/summaries/' + timestamp), graph=sess.graph)
 
         test_accuracies = []
         global_start = time.time()
@@ -181,12 +199,36 @@ def train():
 
                 if batch_num % TEST_PERIOD == 0 or batch_num == EPOCHS * BATCHES_IN_EPOCH:
                     print('Testing...')
-                    test_inputs = np.reshape(test_inputs, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, network.IMAGE_CHANNELS))
-                    test_targets = np.reshape(test_targets, (-1, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 1))
-                    summary, test_cost, test_accuracy = sess.run([network.summaries, network.cost, network.accuracy],
-                                                    feed_dict={network.inputs: test_inputs,
-                                                                network.targets: test_targets,
-                                                                network.is_training: False})
+
+                    test_accuracy = 0
+                    test_cost = 0
+                    test_segmentation = np.array([], dtype=np.dtype(float)).reshape(0, 256, 256, 1)
+
+                    for i in trange(TEST_BATCH_COUNT):
+                        print(f'Test batch {i}')
+                        batch_inputs, batch_targets = next_test_batch(i)
+                        batch_test_cost, batch_test_accuracy, batch_test_segmentation = sess.run([network.cost, network.accuracy, network.segmentation_result],
+                                feed_dict={network.inputs: batch_inputs,
+                                            network.targets: batch_targets,
+                                            network.is_training: False})
+                        test_cost += batch_test_cost
+                        test_accuracy += batch_test_accuracy
+                        test_segmentation = np.concatenate((test_segmentation, batch_test_segmentation))
+
+                        print('Drawing sample results...')
+                        draw_results(batch_inputs, batch_targets, batch_test_segmentation, network, batch_num + ' ' + i)
+
+                        # print('Clustering results...')
+                        # for i in trange(TEST_BATCH_SIZE):
+                        #     result = test_segmentation[i]
+                        #     result = result.reshape(256, 256)
+                        #     cluster = FindAllClusters(result)
+                        #     img_no = IMAGES_COUNT + 1 + i
+                        #     preprocess.CreateGeoJSON('AOI_1_RIO_img' + str(img_no), cluster)
+                        #     preprocess.FixGeoJSON('AOI_1_RIO_img' + str(img_no))
+
+                    test_accuracy /= TEST_BATCH_COUNT
+                    test_cost /= TEST_BATCH_COUNT
 
                     print('Step {}, test accuracy: {}'.format(batch_num, test_accuracy))
                     print('Cost {}'.format(test_cost))
@@ -196,28 +238,11 @@ def train():
                     print("Best accuracy: {} in batch {}".format(max_acc[0], max_acc[1]))
                     print("Total time: {}".format(time.time() - global_start))
 
-                    summary_writer.add_summary(summary, batch_num)
-                    summary_writer.flush()
-
                     n_examples = 10
-                    sample = random.sample(range(TEST_IMAGES_COUNT), n_examples) + [2,3,4,5]
-                    test_segmentation = sess.run(network.segmentation_result, feed_dict={
-                        network.inputs: np.reshape(test_inputs, [TEST_IMAGES_COUNT, network.IMAGE_HEIGHT, network.IMAGE_WIDTH, 11])})
+                    sample = random.sample(range(TEST_IMAGES_COUNT), n_examples) + [2,3,4,5,6]
 
-                    print('Drawing sample results...')
-                    draw_results(test_inputs[sample], test_targets[sample], test_segmentation[sample], test_accuracy, network,
-                                                 batch_num)
-
-                    print('Clustering results...')
-                    for i in trange(TEST_IMAGES_COUNT):
-                        result = test_segmentation[i]
-                        result = result.reshape(256, 256)
-                        cluster = FindAllClusters(result)
-                        img_no = IMAGES_COUNT + 1 + i
-                        preprocess.CreateGeoJSON('AOI_1_RIO_img' + str(img_no), cluster)
-                        preprocess.FixGeoJSON('AOI_1_RIO_img' + str(img_no))
-
-                    preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + timestamp + '.csv'), perm)
+                    preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S") + '.csv'), perm)
+                    preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S") + 'tr.csv'), perm, transpose=True)
 
                     if test_accuracy >= max_acc[0]:
                        checkpoint_path = os.path.join('models', network.description, timestamp, 'model.ckpt')
