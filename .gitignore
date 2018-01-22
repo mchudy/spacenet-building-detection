@@ -107,3 +107,4 @@ results/*
 logs/
 image_plots/
 models/*
+output/
