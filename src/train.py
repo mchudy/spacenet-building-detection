@@ -18,6 +18,7 @@ import csv
 import pandas as pd
 from greedy_clustering import FindAllClusters
 from tqdm import trange
+from skimage import measure
 
 
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
@@ -26,12 +27,12 @@ pd.options.mode.chained_assignment = None
 
 BATCH_SIZE = 1
 IMAGES_COUNT = 5000
-TEST_IMAGES_COUNT = 20
+TEST_IMAGES_COUNT = 200
 EPOCHS = 5
-TEST_PERIOD = 10
+TEST_PERIOD = 200
 BATCHES_IN_EPOCH = int(math.floor(IMAGES_COUNT / BATCH_SIZE))
 TEST_BATCH_SIZE = 10
-TEST_BATCH_COUNT = int(TEST_IMAGES_COUNT / TEST_BATCH_SIZE)
+TEST_BATCH_COUNT = int(math.floor(TEST_IMAGES_COUNT / TEST_BATCH_SIZE))
 
 
 def rel_path(path):
@@ -69,13 +70,14 @@ def convert_dist_transform_to_array(image_number):
     return np.nan_to_num(normalized)
 
 
-def draw_results(test_inputs, test_targets, test_segmentation, network, batch_num):
+def draw_results(test_inputs, test_targets, test_segmentation, network, timestamp, batch_num):
     n_examples_to_plot = len(test_inputs)
     _, axs = plt.subplots(4, n_examples_to_plot, figsize=(n_examples_to_plot * 3, 10))
 
     for example_i in range(n_examples_to_plot):
         axs[0][example_i].imshow(test_inputs[example_i][:,:,:3])
-        axs[1][example_i].imshow(test_targets[example_i][:,:,0], cmap='gray')
+        axs[1][example_i].imshow(test_targets[example_i][:,:,0])
+        # axs[2][example_i].imshow(test_segmentation[example_i][:,:,0])
         axs[2][example_i].imshow(
             np.reshape(test_segmentation[example_i][:,:,0], [network.IMAGE_HEIGHT, network.IMAGE_WIDTH]), cmap='gray')
 
@@ -89,11 +91,8 @@ def draw_results(test_inputs, test_targets, test_segmentation, network, batch_nu
     plt.savefig(buf, format='png')
     buf.seek(0)
 
-    IMAGE_PLOT_DIR = 'image_plots/'
-    if not os.path.exists(IMAGE_PLOT_DIR):
-        os.makedirs(IMAGE_PLOT_DIR)
-
-    plt.savefig('{}/batch_{}.jpg'.format(IMAGE_PLOT_DIR, batch_num))
+    os.makedirs(rel_path(f'../image_plots/{timestamp}/' ), exist_ok=True)
+    plt.savefig('{}/batch_{}.jpg'.format(rel_path(f'../image_plots/{timestamp}'), batch_num))
     return buf
 
 
@@ -206,7 +205,6 @@ def train():
                     test_segmentation = np.array([], dtype=np.dtype(float)).reshape(0, 256, 256, 1)
 
                     for i in trange(TEST_BATCH_COUNT):
-                        print(f'Test batch {i}')
                         batch_inputs, batch_targets = next_test_batch(i)
                         batch_test_cost, batch_test_accuracy, batch_test_segmentation = sess.run([network.cost, network.accuracy, network.segmentation_result],
                                 feed_dict={network.inputs: batch_inputs,
@@ -214,18 +212,18 @@ def train():
                                             network.is_training: False})
                         test_cost += batch_test_cost
                         test_accuracy += batch_test_accuracy
+                        print(batch_test_cost)
                         test_segmentation = np.concatenate((test_segmentation, batch_test_segmentation))
 
-                        print('Drawing sample results...')
-                        if i < 3:
-                            draw_results(batch_inputs, batch_targets, batch_test_segmentation, network, f'{batch_num}_{i}')
+                        if i < 2 or test_cost <= -0.3:
+                            draw_results(batch_inputs, batch_targets, batch_test_segmentation, network, timestamp, f'{batch_num}_{i}')
 
-                        # print('Clustering results...')
-                        # for i in trange(TEST_BATCH_SIZE):
-                        #     result = test_segmentation[i]
+                        # for j in trange(TEST_BATCH_SIZE):
+                        #     result = test_segmentation[j]
                         #     result = result.reshape(256, 256)
                         #     cluster = FindAllClusters(result)
-                        #     img_no = IMAGES_COUNT + 1 + i
+                        #     print(f'{j} clustered')
+                        #     img_no = IMAGES_COUNT + 1 + i * TEST_BATCH_SIZE + j
                         #     preprocess.CreateGeoJSON('AOI_1_RIO_img' + str(img_no), cluster)
                         #     preprocess.FixGeoJSON('AOI_1_RIO_img' + str(img_no))
 
@@ -234,14 +232,14 @@ def train():
 
                     print('Step {}, test accuracy: {}'.format(batch_num, test_accuracy))
                     print('Cost {}'.format(test_cost))
-                    test_accuracies.append((test_accuracy, batch_num))
-                    print("Accuracies in time: ", [test_accuracies[x][0] for x in range(len(test_accuracies))])
+                    test_accuracies.append((test_cost, batch_num))
+                    print("Costs in time: ", [test_accuracies[x][0] for x in range(len(test_accuracies))])
                     max_acc = max(test_accuracies)
-                    print("Best accuracy: {} in batch {}".format(max_acc[0], max_acc[1]))
+                    print("Best cost: {} in batch {}".format(max_acc[0], max_acc[1]))
                     print("Total time: {}".format(time.time() - global_start))
 
-                    preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S") + '.csv'), perm)
-                    preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S") + 'tr.csv'), perm, transpose=True)
+                    # preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S") + '.csv'), perm)
+                    # preprocess.merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result' + datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S") + 'tr.csv'), perm, transpose=True)
 
                     if test_accuracy >= max_acc[0]:
                        checkpoint_path = os.path.join('models', network.description, timestamp, 'model.ckpt')

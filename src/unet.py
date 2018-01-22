@@ -10,7 +10,7 @@ def conv_conv_pool(input_, n_filters, training, name, pool=True, activation=tf.n
     with tf.variable_scope("layer{}".format(name)):
         for i, F in enumerate(n_filters):
             net = tf.layers.conv2d(net, F, (3, 3), activation=None, padding='same', name="conv_{}".format(i + 1))
-            #net = tf.layers.batch_normalization(net, training=training, name="bn_{}".format(i + 1))
+            net = tf.layers.batch_normalization(net, training=training, name="bn_{}".format(i + 1))
             net = activation(net, name="relu{}_{}".format(name, i + 1))
 
         if pool is False:
@@ -91,26 +91,11 @@ class Network:
             conv9 = conv_conv_pool(up9, [32, 32], self.is_training, name=9, pool=False)
 
             self.segmentation_result = tf.layers.conv2d(conv9, 1, (1, 1), name='final', activation=tf.nn.sigmoid, padding='same')
-            #self.segmentation_result = tf.layers.conv2d(net, 1, (1, 1), name='final', activation=tf.nn.sigmoid, padding='same')
-            #self.segmentation_result = tf.layers.dense(inputs=tf.sigmoid(conv9), units=1)
-
-            # cross_entropy=tf.nn.softmax_cross_entropy_with_logits(logits=logits,labels=trn_labels,name='x_ent')
-            # self.cost=tf.reduce_mean(cross_entropy, name='x_ent_mean')
-            # self.train_op=tf.train.AdamOptimizer(learning_rate=1e-5).minimize(self.cost)
-
-            # logits=tf.reshape(self.segmentation_result, [-1, 1])
-            # trn_labels=tf.reshape(self.targets, [-1, 1])
-            # eps = 1e-5
-            # prediction = pixel_wise_softmax_2(logits)
-            # intersection = tf.reduce_sum(prediction * trn_labels)
-            # union =  eps + tf.reduce_sum(prediction) + tf.reduce_sum(trn_labels)
-            # self.cost = -(2 * intersection/ (union))
-            # self.train_op = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.cost)
 
             self.cost = -IOU_(self.segmentation_result, self.targets)
-            #self.cost = tf.sqrt(tf.reduce_mean(tf.square(self.segmentation_result - self.targets)))
+            #self.cost = tf.reduce_sum ( tf.pow( tf.subtract(self.segmentation_result, self.targets),2))
             global_step = tf.train.get_or_create_global_step()
-            self.train_op = tf.train.AdamOptimizer(learning_rate=0.0005).minimize(self.cost, global_step=global_step)
+            self.train_op = tf.train.AdamOptimizer(learning_rate=1e-4, epsilon=0.01).minimize(self.cost)
 
             with tf.name_scope('accuracy'):
                 argmax_probs = tf.round(self.segmentation_result)
