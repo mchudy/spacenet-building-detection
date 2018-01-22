@@ -15,6 +15,8 @@ import cv2
 import skimage.draw
 import skimage.io
 import re
+from skimage import measure
+
 
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
 IMAGES_COUNT = 6940
@@ -117,46 +119,16 @@ def create_dist_map(rasterSrc, vectorSrc, npDistFileName='',
         np.save(npDistFileName, proxTotal)
 
 
-def plot_dist_transform(input_image, pixel_coords, dist_image,
-                        figsize=(8,8), plot_name='', add_title=False,
-                        colorbar=True, mask_image='',
-                        poly_face_color='orange', poly_edge_color='red',
-                        poly_nofill_color='blue', cmap='bwr'):
-    fig, (ax0, ax1, ax2) = plt.subplots(1, 3,
-                                        figsize=(3*figsize[0], figsize[1]))
+def plot_dist_transform(input_image, dist_image, figsize=(8,8), plot_name='',  mask_image=''):
 
-    #fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(2*figsize[0], figsize[1]))
-    mind, maxd = np.round(np.min(dist_image),2), np.round(np.max(dist_image),2)
-    if add_title:
-        suptitle = fig.suptitle(plot_name.split('/')[-1], fontsize='large')
-
-    # create patches
-    patches = []
-    patches_nofill = []
-    if len(pixel_coords) > 0:
-        # get patches
-        for coord in pixel_coords:
-            patches_nofill.append(Polygon(coord, facecolor=poly_nofill_color,
-                                          edgecolor=poly_edge_color, lw=3))
-            patches.append(Polygon(coord, edgecolor=poly_edge_color, fill=True,
-                                   facecolor=poly_face_color))
-        p0 = PatchCollection(patches, alpha=0.25, match_original=True)
-        p1 = PatchCollection(patches, alpha=0.75, match_original=True)
-        #p2 = PatchCollection(patches_nofill, alpha=0.75, match_original=True)
+    _, (ax0, ax1, ax2) = plt.subplots(1, 3, figsize=(3*figsize[0], figsize[1]))
 
     ax0.imshow(input_image[:,:,:3])
-    if len(patches) > 0:
-        ax0.add_collection(p0)
-    ax0.set_title('Input Image + Ground Truth Buildings')
-
-    ax1.set_title("Ground truth")
+    ax0.set_title('Input image')
+    ax1.set_title('Ground truth')
     ax1.imshow(mask_image[:,:,0], cmap='gray')
     ax2.imshow(dist_image)
-    if len(patches) > 0:
-        ax2.add_collection(p1)
-
     ax2.set_title("Distance Transform")
-
     plt.show()
 
     if len(plot_name) > 0:
@@ -371,28 +343,32 @@ def get_permutation():
 
 
 def preprocess_data():
-    perm = get_permutation()
+    perm = np.load(rel_path('../results/perm.npy'))
+    # perm = get_permutation()
     #rescale_images(perm)
     #generate_masks(perm)
     generate_distance_transforms(perm)
 
-    img_no = 0
-    plot_dist_transform(
-        convert_geotiff_to_array(img_no, scaled=True),
-        [],
-        np.load(get_distance_transform_image_path(img_no) + '.npy'),
-        mask_image=convert_target_to_array(img_no))
+    # img_no = 0
+    # # plot_dist_transform(
+    # #     convert_geotiff_to_array(img_no, scaled=True),
+    # #     [],
+    # #     np.load(get_distance_transform_image_path(img_no) + '.npy'),
+    # #     mask_image=convert_target_to_array(img_no))
     # intensity = np.load(get_distance_transform_image_path(img_no) + '.npy')
-    # # xmax, xmin = intensity.max(), intensity.min()
-    # #intensity = (intensity - xmin)/(xmax - xmin)
+    # xmax, xmin = intensity.max(), intensity.min()
+    # intensity = 2*(intensity - xmin)/(xmax - xmin) - 1
+    # print(intensity)
+
+    # cluster = measure.find_contours(intensity, 0)
+    # #print(cluster)
     # cluster = FindAllClusters(intensity)
-    # np.save('./cluster', cluster)
-    # ccc = np.load('./cluster.npy')
-    # CreateGeoJSON('AOI_1_RIO_img' + str(img_no), ccc)
+    # print(cluster)
+    # CreateGeoJSON('AOI_1_RIO_img' + str(img_no), cluster)
     # FixGeoJSON('AOI_1_RIO_img' + str(img_no))
     # create_truth_csv([perm[img_no]])
     # merge_results(rel_path('../output/geojson'), rel_path('../output/geojson/result.csv'), perm)
-    # #print(ccc)
+    #print(ccc)
 
 
 if __name__ == '__main__':
